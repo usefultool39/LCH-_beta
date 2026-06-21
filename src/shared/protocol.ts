@@ -1,5 +1,5 @@
 export const APP_NAME = 'Lan Control Hub';
-export const APP_VERSION = '0.2.2';
+export const APP_VERSION = '0.2.3';
 
 export const DISCOVERY_PORT = 46880;
 export const DEFAULT_CONTROL_PORT = 46881;

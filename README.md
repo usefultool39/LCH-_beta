@@ -89,8 +89,8 @@ npm run package:win
 输出位置：
 
 ```text
-release/Lan-Control-Hub-0.2.2-win-x64-portable.exe
-release/Lan-Control-Hub-0.2.2-win-x64-setup.exe
+release/Lan-Control-Hub-0.2.3-win-x64-portable.exe
+release/Lan-Control-Hub-0.2.3-win-x64-setup.exe
 ```
 
 macOS 打包脚本保留在 `package.json` 中，但需要在真实 macOS 环境运行并验证。
@@ -98,8 +98,8 @@ macOS 打包脚本保留在 `package.json` 中，但需要在真实 macOS 环境
 GitHub Release 会由 tag 自动触发：
 
 ```bash
-git tag v0.2.2
-git push origin v0.2.2
+git tag v0.2.3
+git push origin v0.2.3
 ```
 
 成功后 Release 附件会包含 Windows exe 和 macOS zip。
