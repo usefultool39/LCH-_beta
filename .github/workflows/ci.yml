@@ -11,14 +11,18 @@ permissions:
 
 jobs:
   check:
-    name: Check (${{ matrix.os }})
+    name: Check (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - windows-latest
-          - macos-latest
+        include:
+          - name: Windows
+            os: windows-latest
+          - name: macOS Intel
+            os: macos-15-intel
+          - name: macOS Apple Silicon
+            os: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
