@@ -712,6 +712,7 @@ function ensureHome() {
 
 function createHome(name = DEFAULT_HOME_NAME) {
   const secret = base64url(crypto.randomBytes(32));
+  resetNetworkTrust();
   state.home = {
     id: homeIdFromSecret(secret),
     name: String(name || DEFAULT_HOME_NAME).trim().slice(0, 40) || DEFAULT_HOME_NAME,
@@ -728,6 +729,7 @@ function createHome(name = DEFAULT_HOME_NAME) {
 function joinHome(secret: string, name = DEFAULT_HOME_NAME) {
   const cleanSecret = String(secret || '').trim();
   if (cleanSecret.length < 16) throw new Error('家庭密钥太短或无效');
+  resetNetworkTrust();
   state.home = {
     id: homeIdFromSecret(cleanSecret),
     name: String(name || DEFAULT_HOME_NAME).trim().slice(0, 40) || DEFAULT_HOME_NAME,
@@ -740,6 +742,12 @@ function joinHome(secret: string, name = DEFAULT_HOME_NAME) {
   broadcastPresence();
   emitState();
   return appStateView();
+}
+
+function resetNetworkTrust() {
+  state.trustedDevices = {};
+  state.blockedDevices = {};
+  peers.clear();
 }
 
 function trustSelf() {
