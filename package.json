@@ -1,8 +1,13 @@
 {
   "name": "lan-control-hub",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Windows/macOS LAN device control hub for chat, files, commands, terminals, and screen view.",
+  "author": "usefultool39",
   "main": "dist/main/index.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/usefultool39/LCH-_beta.git"
+  },
   "bin": {
     "lch": "scripts/lch.js"
   },
@@ -12,6 +17,7 @@
     "build": "npm run build:main && npm run build:renderer",
     "build:main": "tsc -p tsconfig.main.json",
     "build:renderer": "vite build",
+    "check": "npm run typecheck && npm run build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "start": "electron dist/main/index.js",
     "package:win": "npm run build && electron-builder --win --x64",
@@ -32,7 +38,7 @@
     ],
     "win": {
       "icon": "build/icon.ico",
-      "signAndEditExecutable": false,
+      "signExecutable": false,
       "target": [
         {
           "target": "portable",
@@ -62,6 +68,7 @@
     },
     "mac": {
       "icon": "build/icon.png",
+      "artifactName": "Lan-Control-Hub-${version}-mac-${arch}.${ext}",
       "target": [
         "zip"
       ],
@@ -70,12 +77,10 @@
   },
   "dependencies": {
     "@nut-tree-fork/nut-js": "^4.2.6",
-    "@vitejs/plugin-react": "^4.2.1",
     "cross-env": "^7.0.3",
     "lucide-react": "^0.468.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "vite": "^5.1.4",
     "ws": "^8.16.0"
   },
   "devDependencies": {
@@ -83,10 +88,12 @@
     "@types/react": "^18.2.61",
     "@types/react-dom": "^18.2.19",
     "@types/ws": "^8.5.10",
+    "@vitejs/plugin-react": "^6.0.2",
     "concurrently": "^8.2.2",
-    "electron": "22.3.27",
-    "electron-builder": "^24.13.3",
+    "electron": "^42.4.1",
+    "electron-builder": "^26.15.3",
     "typescript": "^5.3.3",
+    "vite": "^8.0.16",
     "wait-on": "^7.2.0"
   }
 }

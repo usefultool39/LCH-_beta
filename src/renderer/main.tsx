@@ -20,6 +20,8 @@ import {
   MessageSquare,
   MonitorPlay,
   MousePointer2,
+  Eye,
+  EyeOff,
   Play,
   Power,
   RefreshCw,
@@ -147,7 +149,7 @@ function SetupScreen({ onCreate, onJoin }: { onCreate: (name: string) => void; o
       <section className="setupHero">
         <div className="setupBrand"><Home size={34} /> Lan Control Hub</div>
         <h1>把家里的 Windows 和 Mac 连成一个控制网络</h1>
-        <p>第一台电脑创建网络，其他电脑粘贴加入密钥。加入后这些电脑会互相信任，可聊天、传文件、执行命令、打开终端和远程控制。</p>
+        <p>第一台电脑创建网络，其他电脑粘贴加入密钥。加入后需要在两台电脑上确认信任，之后即可聊天、传文件、执行命令、打开终端和远程控制。</p>
       </section>
       <section className="setupPanel">
         <div className="field">
@@ -693,6 +695,7 @@ function SettingsView({
 }) {
   const [name, setName] = useState(state.device.name);
   const [copied, setCopied] = useState(false);
+  const [secretVisible, setSecretVisible] = useState(false);
   const [firewall, setFirewall] = useState<FirewallStatus | null>(null);
   const [firewallBusy, setFirewallBusy] = useState(false);
   const trustedDevices = Object.values(state.trustedDevices)
@@ -728,13 +731,18 @@ function SettingsView({
         </section>
         <section className="panel">
           <h2>添加新设备</h2>
-          <p>在新电脑上打开 App，选择“我已有加入密钥”，粘贴下面这串内容即可加入同一个家庭网络。</p>
-          <p className="secretText">{state.home?.secret}</p>
-          <button className="secondary" onClick={async () => {
-            await navigator.clipboard.writeText(state.home?.secret || '');
-            setCopied(true);
-            window.setTimeout(() => setCopied(false), 1200);
-          }}><Clipboard size={16} /> {copied ? '已复制' : '复制加入密钥'}</button>
+          <p>在新电脑上打开 App，选择“我已有加入密钥”，粘贴下面这串内容即可加入同一个家庭网络。加入后还需要双方手动信任。</p>
+          <p className="secretText">{secretVisible ? state.home?.secret : '•••• •••• •••• •••• •••• ••••'}</p>
+          <div className="rowActions">
+            <button className="secondary" onClick={() => setSecretVisible(!secretVisible)}>
+              {secretVisible ? <EyeOff size={16} /> : <Eye size={16} />} {secretVisible ? '隐藏密钥' : '显示密钥'}
+            </button>
+            <button className="secondary" onClick={async () => {
+              await navigator.clipboard.writeText(state.home?.secret || '');
+              setCopied(true);
+              window.setTimeout(() => setCopied(false), 1200);
+            }}><Clipboard size={16} /> {copied ? '已复制' : '复制加入密钥'}</button>
+          </div>
         </section>
         <section className="panel">
           <div className="panelHeader">

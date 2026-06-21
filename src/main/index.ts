@@ -334,7 +334,7 @@ function createDefaultState(): AppState {
     auditLog: [],
     sharedFolder: '',
     fileShareEnabled: true,
-    autoTrustDevices: true,
+    autoTrustDevices: false,
     localApiToken: base64url(crypto.randomBytes(32))
   };
 }
@@ -377,7 +377,7 @@ function loadState(): AppState {
         auditLog: parsed.auditLog || [],
         sharedFolder: parsed.sharedFolder || '',
         fileShareEnabled: (parsed as any).fileShareEnabled !== false,
-        autoTrustDevices: (parsed as any).autoTrustDevices !== false,
+        autoTrustDevices: Boolean((parsed as any).autoTrustDevices),
         localApiToken: parsed.localApiToken || base64url(crypto.randomBytes(32))
       };
     }
