@@ -1,11 +1,13 @@
-import { app, BrowserWindow, clipboard as electronClipboard, desktopCapturer, dialog, ipcMain, Menu, nativeTheme, screen as electronScreen, session } from 'electron';
+import { app, BrowserWindow, clipboard as electronClipboard, desktopCapturer, dialog, ipcMain, Menu, nativeTheme, screen as electronScreen, session, shell } from 'electron';
 import crypto from 'node:crypto';
 import dgram from 'node:dgram';
 import fs from 'node:fs';
+import https from 'node:https';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
+import { pipeline } from 'node:stream/promises';
 import { WebSocket, WebSocketServer } from 'ws';
 import {
   APP_NAME,
@@ -26,6 +28,7 @@ import {
   MAX_CONTROL_MESSAGE_BYTES,
   MAX_CONVERSATION_EVENTS,
   MAX_FILE_BYTES,
+  MAX_STREAM_FILE_BYTES,
   MAX_LOCAL_API_BODY_BYTES,
   MAX_TASK_OUTPUT_BYTES,
   NetworkInfo,
@@ -37,6 +40,7 @@ import {
   RemoteSessionMode,
   RemoteSessionRecord,
   RemoteSessionStatus,
+  SharedFileToken,
   SharedFolderListing,
   TaskRecord,
   TrustedDevice,
@@ -89,9 +93,16 @@ type RunningTask = {
   timeout: NodeJS.Timeout;
 };
 
+type SharedDownloadToken = SharedFileToken & {
+  requesterId: string;
+  target: string;
+};
+
 const DEFAULT_HOME_NAME = '我的局域网';
 const DOWNLOAD_FOLDER_NAME = 'LanControlHub';
 const HEADLESS = process.argv.includes('--headless') || process.env.LCH_HEADLESS === '1';
+const RELEASES_URL = 'https://github.com/usefultool39/LCH-_beta/releases/latest';
+const LATEST_RELEASE_API_URL = 'https://api.github.com/repos/usefultool39/LCH-_beta/releases/latest';
 
 let mainWindow: BrowserWindow | null = null;
 let state: AppState;
@@ -114,6 +125,7 @@ const remoteSessionWindows = new Map<string, BrowserWindow>();
 const remoteWindowClosingByMain = new Set<string>();
 const localSseClients = new Set<http.ServerResponse>();
 const controlReplayGuard = new ControlReplayGuard();
+const sharedDownloadTokens = new Map<string, SharedDownloadToken>();
 let remoteInputChain: Promise<unknown> = Promise.resolve();
 let nutRuntime: Promise<any> | null = null;
 
@@ -417,6 +429,65 @@ function writeLocalApiConfig() {
     token: state.localApiToken,
     updatedAt: Date.now()
   }, null, 2)}\n`);
+}
+
+function compareVersions(a: string, b: string) {
+  const left = String(a || '').replace(/^v/, '').split('.').map((part) => Number(part) || 0);
+  const right = String(b || '').replace(/^v/, '').split('.').map((part) => Number(part) || 0);
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const diff = (left[index] || 0) - (right[index] || 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+function getJson<T>(url: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, {
+      headers: {
+        'Accept': 'application/vnd.github+json',
+        'User-Agent': `${APP_NAME}/${APP_VERSION}`
+      }
+    }, (res) => {
+      let raw = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { raw += chunk; });
+      res.on('end', () => {
+        if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+          reject(new Error(`检查更新失败：HTTP ${res.statusCode || 0}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(raw));
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+    req.setTimeout(12000, () => {
+      req.destroy(new Error('检查更新超时'));
+    });
+    req.on('error', reject);
+  });
+}
+
+async function checkForUpdates() {
+  const latest = await getJson<any>(LATEST_RELEASE_API_URL);
+  const tag = String(latest.tag_name || '');
+  const latestVersion = tag.replace(/^v/, '');
+  return {
+    currentVersion: APP_VERSION,
+    latestVersion,
+    tag,
+    updateAvailable: compareVersions(latestVersion, APP_VERSION) > 0,
+    url: latest.html_url || RELEASES_URL,
+    publishedAt: latest.published_at,
+    assets: Array.isArray(latest.assets) ? latest.assets.map((asset: any) => ({
+      name: String(asset.name || ''),
+      size: Number(asset.size || 0),
+      url: String(asset.browser_download_url || '')
+    })) : []
+  };
 }
 
 function localAddresses() {
@@ -1024,6 +1095,9 @@ async function handleControlMessage(payload: { fromId: string; fromName: string;
     case 'file.downloadShared':
       return { ok: true, data: readSharedFile(payload.data?.relativePath || '') };
 
+    case 'file.createDownloadToken':
+      return { ok: true, data: createSharedDownloadToken(payload.fromId, payload.data?.relativePath || '') };
+
     case 'file.uploadShared':
       assertPeerWritable(payload.fromId);
       return { ok: true, data: uploadSharedFile(payload.fromId, payload.fromName, payload.data) };
@@ -1165,7 +1239,8 @@ function startControlServer() {
 
 function defaultShellCommand(command: string) {
   if (process.platform === 'win32') {
-    return { file: 'powershell.exe', args: ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command] };
+    const utf8Command = `[Console]::InputEncoding=[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); $OutputEncoding=[Console]::OutputEncoding; ${command}`;
+    return { file: 'powershell.exe', args: ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', utf8Command] };
   }
   const shell = process.env.SHELL || '/bin/zsh';
   return { file: shell, args: ['-lc', command] };
@@ -1771,6 +1846,42 @@ function uniqueDownloadPath(fileName: string) {
   return path.join(folder, `${Date.now()}-${path.basename(String(fileName || 'received-file'))}`);
 }
 
+function mimeTypeForFile(fileName: string) {
+  const ext = path.extname(fileName).toLowerCase();
+  const types: Record<string, string> = {
+    '.apng': 'image/apng',
+    '.avif': 'image/avif',
+    '.bmp': 'image/bmp',
+    '.gif': 'image/gif',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.svg': 'image/svg+xml',
+    '.webp': 'image/webp',
+    '.mp4': 'video/mp4',
+    '.m4v': 'video/mp4',
+    '.mov': 'video/quicktime',
+    '.webm': 'video/webm',
+    '.mp3': 'audio/mpeg',
+    '.m4a': 'audio/mp4',
+    '.ogg': 'audio/ogg',
+    '.wav': 'audio/wav',
+    '.flac': 'audio/flac',
+    '.pdf': 'application/pdf',
+    '.txt': 'text/plain; charset=utf-8',
+    '.log': 'text/plain; charset=utf-8',
+    '.md': 'text/markdown; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.csv': 'text/csv; charset=utf-8'
+  };
+  return types[ext] || 'application/octet-stream';
+}
+
+function contentDisposition(fileName: string, disposition: 'inline' | 'attachment' = 'inline') {
+  const fallback = path.basename(fileName).replace(/[^\w.\- ]+/g, '_') || 'download';
+  return `${disposition}; filename="${fallback.replace(/"/g, '_')}"; filename*=UTF-8''${encodeURIComponent(path.basename(fileName))}`;
+}
+
 function receiveFile(peerId: string, peerName: string, file: any) {
   const { name, buffer } = decodeFilePayload(file, MAX_FILE_BYTES);
   const filePath = uniqueDownloadPath(name);
@@ -1919,6 +2030,92 @@ function readSharedFile(relativePath = '') {
   };
 }
 
+function pruneSharedDownloadTokens() {
+  const now = Date.now();
+  for (const [token, item] of sharedDownloadTokens) {
+    if (item.expiresAt <= now) sharedDownloadTokens.delete(token);
+  }
+}
+
+function createSharedDownloadToken(requesterId: string, relativePath = ''): SharedFileToken {
+  pruneSharedDownloadTokens();
+  const { target, currentPath } = resolveSharedPath(relativePath);
+  const stat = fs.statSync(target);
+  if (!stat.isFile()) throw new Error('目标不是文件');
+  if (stat.size > MAX_STREAM_FILE_BYTES) throw new Error('文件超过 20GB，暂不支持通过文件库直接下载');
+  const token = base64url(crypto.randomBytes(32));
+  const name = path.basename(target);
+  const item: SharedDownloadToken = {
+    requesterId,
+    token,
+    name,
+    relativePath: currentPath,
+    size: stat.size,
+    mime: mimeTypeForFile(name),
+    expiresAt: Date.now() + 15 * 60 * 1000,
+    target
+  };
+  sharedDownloadTokens.set(token, item);
+  return {
+    token: item.token,
+    name: item.name,
+    relativePath: item.relativePath,
+    size: item.size,
+    mime: item.mime,
+    expiresAt: item.expiresAt
+  };
+}
+
+function sharedFileUrl(peer: Pick<PeerInfo, 'address' | 'webPort'>, token: SharedFileToken) {
+  return `http://${peer.address}:${peer.webPort}/api/files/download/${encodeURIComponent(token.token)}/${encodeURIComponent(token.name)}`;
+}
+
+function streamUrlToFile(url: string, filePath: string) {
+  return new Promise<void>((resolve, reject) => {
+    const request = http.get(url, (res) => {
+      if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+        res.resume();
+        reject(new Error(`下载失败：HTTP ${res.statusCode || 0}`));
+        return;
+      }
+      pipeline(res, fs.createWriteStream(filePath))
+        .then(resolve)
+        .catch(reject);
+    });
+    request.on('error', reject);
+  });
+}
+
+async function createRemoteSharedFileToken(peerId: string, relativePath: string) {
+  const peer = getTrustedPeer(peerId);
+  const token = await sendControl<SharedFileToken>(peerId, 'file.createDownloadToken', { relativePath }, 15000);
+  return {
+    ...token,
+    url: sharedFileUrl(peer, token)
+  };
+}
+
+async function downloadRemoteSharedFile(peerId: string, relativePath: string) {
+  const token = await createRemoteSharedFileToken(peerId, relativePath);
+  const filePath = uniqueDownloadPath(token.name);
+  try {
+    await streamUrlToFile(token.url, filePath);
+  } catch (error) {
+    fs.rmSync(filePath, { force: true });
+    throw error;
+  }
+  addConversationEvent(peerId, {
+    direction: 'incoming',
+    type: 'file',
+    name: token.name,
+    size: token.size,
+    path: filePath,
+    senderName: state.trustedDevices[peerId]?.name || '远程设备'
+  });
+  addAudit('file.downloadShared', token.name, peerId, state.device.id);
+  return { filePath, name: token.name, size: token.size };
+}
+
 function uniqueFilePathInDirectory(directory: string, fileName: string) {
   const parsed = path.parse(path.basename(fileName || 'received-file'));
   let candidate = path.join(directory, `${parsed.name}${parsed.ext}`);
@@ -1946,10 +2143,78 @@ function uploadSharedFile(peerId: string, peerName: string, data: any) {
   };
 }
 
+function streamSharedDownload(req: http.IncomingMessage, res: http.ServerResponse, token: string) {
+  pruneSharedDownloadTokens();
+  const item = sharedDownloadTokens.get(token);
+  if (!item || item.expiresAt <= Date.now()) {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Download token expired or not found');
+    return;
+  }
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(item.target);
+    if (!stat.isFile()) throw new Error('Target is not a file');
+  } catch {
+    sharedDownloadTokens.delete(token);
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('File no longer exists');
+    return;
+  }
+
+  const headers = {
+    'Accept-Ranges': 'bytes',
+    'Content-Type': item.mime,
+    'Content-Disposition': contentDisposition(item.name, 'inline'),
+    'Cache-Control': 'private, max-age=60',
+    'X-Content-Type-Options': 'nosniff'
+  };
+  const range = req.headers.range;
+  if (range) {
+    const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+    if (!match) {
+      res.writeHead(416, { ...headers, 'Content-Range': `bytes */${stat.size}` });
+      res.end();
+      return;
+    }
+    const start = match[1] ? Number(match[1]) : 0;
+    const end = match[2] ? Math.min(Number(match[2]), stat.size - 1) : stat.size - 1;
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= stat.size) {
+      res.writeHead(416, { ...headers, 'Content-Range': `bytes */${stat.size}` });
+      res.end();
+      return;
+    }
+    res.writeHead(206, {
+      ...headers,
+      'Content-Length': String(end - start + 1),
+      'Content-Range': `bytes ${start}-${end}/${stat.size}`
+    });
+    if (req.method === 'HEAD') {
+      res.end();
+      return;
+    }
+    fs.createReadStream(item.target, { start, end }).pipe(res);
+    return;
+  }
+
+  res.writeHead(200, { ...headers, 'Content-Length': String(stat.size) });
+  if (req.method === 'HEAD') {
+    res.end();
+    return;
+  }
+  fs.createReadStream(item.target).pipe(res);
+}
+
 function startWebServer() {
   return new Promise<void>((resolve, reject) => {
     function listen(port: number) {
-      const server = http.createServer((_req, res) => {
+      const server = http.createServer((req, res) => {
+        const url = new URL(req.url || '/', `http://127.0.0.1:${port}`);
+        const tokenMatch = /^\/api\/files\/download\/([^/]+)\/?/.exec(url.pathname);
+        if ((req.method === 'GET' || req.method === 'HEAD') && tokenMatch) {
+          streamSharedDownload(req, res, decodeURIComponent(tokenMatch[1]));
+          return;
+        }
         res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
         res.end(`${APP_NAME} running on ${os.hostname()}\n`);
       });
@@ -2071,6 +2336,12 @@ async function handleLocalApi(pathname: string, method: string, body: any) {
   }
   if (method === 'POST' && pathname === '/api/files/get') {
     return sendControl(body.peerId, 'file.downloadShared', { relativePath: body.relativePath || '' }, 60000);
+  }
+  if (method === 'POST' && pathname === '/api/files/download') {
+    return downloadRemoteSharedFile(body.peerId, body.relativePath || '');
+  }
+  if (method === 'POST' && pathname === '/api/files/preview') {
+    return createRemoteSharedFileToken(body.peerId, body.relativePath || '');
   }
   if (method === 'POST' && pathname === '/api/files/send') {
     assertPeerWritable(body.peerId);
@@ -2291,6 +2562,8 @@ function registerIpc() {
   ipcMain.handle('lch:get-remote-sessions', () => serializeRemoteSessions());
   ipcMain.handle('lch:get-firewall-status', () => getFirewallStatus());
   ipcMain.handle('lch:repair-firewall', (_event, elevated) => repairFirewallRules(elevated !== false));
+  ipcMain.handle('lch:check-updates', () => checkForUpdates());
+  ipcMain.handle('lch:open-latest-release', () => shell.openExternal(RELEASES_URL));
   ipcMain.handle('lch:create-home', (_event, name) => createHome(name));
   ipcMain.handle('lch:join-home', (_event, secret, name) => joinHome(secret, name));
   ipcMain.handle('lch:update-name', (_event, name) => {
@@ -2359,21 +2632,9 @@ function registerIpc() {
     sendControl(peerId, 'file.listShared', { relativePath })
   ));
   ipcMain.handle('lch:download-shared-file', async (_event, peerId, relativePath) => {
-    const remoteFile = await sendControl<any>(peerId, 'file.downloadShared', { relativePath }, 60000);
-    const decoded = decodeFilePayload(remoteFile, MAX_FILE_BYTES);
-    const fileName = decoded.name;
-    const filePath = uniqueDownloadPath(fileName);
-    fs.writeFileSync(filePath, decoded.buffer);
-    addConversationEvent(peerId, {
-      direction: 'incoming',
-      type: 'file',
-      name: fileName,
-      size: decoded.size,
-      path: filePath,
-      senderName: state.trustedDevices[peerId]?.name || '远程设备'
-    });
-    return { filePath };
+    return downloadRemoteSharedFile(peerId, relativePath);
   });
+  ipcMain.handle('lch:preview-shared-file', (_event, peerId, relativePath) => createRemoteSharedFileToken(peerId, relativePath));
   ipcMain.handle('lch:upload-shared-file', async (_event, peerId, relativePath, file) => {
     assertPeerWritable(peerId);
     const decoded = decodeFilePayload(file, MAX_FILE_BYTES);

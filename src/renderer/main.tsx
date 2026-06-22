@@ -35,10 +35,14 @@ import {
   Star,
   TerminalSquare,
   Trash2,
-  Upload
+  Upload,
+  Image as ImageIcon,
+  Film,
+  Music2,
+  FileText
 } from 'lucide-react';
-import { MAX_FILE_BYTES } from '../shared/protocol';
-import type { AppStateView, DevicePreference, FirewallStatus, PeerInfo, RemoteInputEvent, RemoteOpenResult, RemoteSessionRecord, SharedFolderListing, TaskRecord, TerminalOutputEvent } from '../shared/protocol';
+import { APP_VERSION, MAX_FILE_BYTES } from '../shared/protocol';
+import type { AppStateView, DevicePreference, FirewallStatus, PeerInfo, RemoteInputEvent, RemoteOpenResult, RemoteSessionRecord, SharedFileToken, SharedFolderListing, TaskRecord, TerminalOutputEvent } from '../shared/protocol';
 import './styles.css';
 
 const api = window.lanControlHub;
@@ -74,6 +78,8 @@ type RemoteNotice = {
   active: boolean;
 };
 
+type UpdateInfo = Awaited<ReturnType<typeof api.checkUpdates>>;
+
 function formatBytes(size = 0) {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
@@ -103,6 +109,15 @@ function formatRelativeTime(value?: number) {
   return `${Math.round(hours / 24)} 天前`;
 }
 
+function formatDuration(start?: number, end?: number) {
+  if (!start) return '';
+  const seconds = Math.max(0, Math.round(((end || Date.now()) - start) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return `${minutes}m ${rest}s`;
+}
+
 function peerLabel(peer: PeerInfo | null) {
   if (!peer) return '未选择设备';
   return peer.displayName || peer.alias || peer.name;
@@ -128,6 +143,44 @@ function parentPath(relativePath = '') {
   const parts = String(relativePath || '').split(/[\\/]/).filter(Boolean);
   parts.pop();
   return parts.join('/');
+}
+
+type SharedFileEntry = SharedFolderListing['entries'][number];
+type PreviewToken = SharedFileToken & { url: string };
+
+function pathCrumbs(relativePath = '') {
+  const parts = String(relativePath || '').split(/[\\/]/).filter(Boolean);
+  const crumbs = [{ label: '文件库', path: '' }];
+  let current = '';
+  for (const part of parts) {
+    current = [current, part].filter(Boolean).join('/');
+    crumbs.push({ label: part, path: current });
+  }
+  return crumbs;
+}
+
+function fileExtension(name = '') {
+  return name.includes('.') ? name.split('.').pop()!.toLowerCase() : '';
+}
+
+function previewKind(entry?: Pick<SharedFileEntry, 'name' | 'type'> | null, mime = '') {
+  if (!entry || entry.type !== 'file') return 'none';
+  const ext = fileExtension(entry.name);
+  if (mime.startsWith('image/') || ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'avif'].includes(ext)) return 'image';
+  if (mime.startsWith('video/') || ['mp4', 'm4v', 'mov', 'webm'].includes(ext)) return 'video';
+  if (mime.startsWith('audio/') || ['mp3', 'm4a', 'wav', 'ogg', 'flac'].includes(ext)) return 'audio';
+  if (mime.includes('pdf') || ext === 'pdf') return 'pdf';
+  return 'download';
+}
+
+function fileIcon(entry: SharedFileEntry) {
+  if (entry.type === 'directory') return <Folder size={17} />;
+  const kind = previewKind(entry);
+  if (kind === 'image') return <ImageIcon size={17} />;
+  if (kind === 'video') return <Film size={17} />;
+  if (kind === 'audio') return <Music2 size={17} />;
+  if (kind === 'pdf') return <FileText size={17} />;
+  return <FileIcon size={17} />;
 }
 
 function readFileAsBase64(file: File) {
@@ -521,6 +574,7 @@ function FilesView({
   onClearFolder,
   onSetFileSharing,
   onListRemote,
+  onPreview,
   onDownload,
   onUpload
 }: {
@@ -530,16 +584,23 @@ function FilesView({
   onClearFolder: () => void;
   onSetFileSharing: (enabled: boolean) => void;
   onListRemote: (path: string) => Promise<SharedFolderListing>;
+  onPreview: (path: string) => Promise<PreviewToken>;
   onUpload: (path: string, file: File) => Promise<void>;
-  onDownload: (path: string) => Promise<void>;
+  onDownload: (path: string) => Promise<{ filePath: string; name: string; size: number } | void>;
 }) {
   const [listing, setListing] = useState<SharedFolderListing | null>(null);
   const [remotePath, setRemotePath] = useState('');
+  const [selectedEntry, setSelectedEntry] = useState<SharedFileEntry | null>(null);
+  const [preview, setPreview] = useState<PreviewToken | null>(null);
   const [busy, setBusy] = useState(false);
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [downloadBusy, setDownloadBusy] = useState(false);
+  const [downloadResult, setDownloadResult] = useState('');
   const [dragging, setDragging] = useState(false);
   const uploadRef = useRef<HTMLInputElement>(null);
   const canBrowse = Boolean(peer?.isOnline && peer.trusted);
   const canUpload = Boolean(canBrowse && listing?.writable && remotePath && !peer?.readOnly);
+  const selectedKind = previewKind(selectedEntry, preview?.mime || '');
 
   async function load(pathValue = '') {
     if (!canBrowse) return;
@@ -548,8 +609,38 @@ function FilesView({
       const next = await onListRemote(pathValue);
       setListing(next);
       setRemotePath(next.currentPath || '');
+      setSelectedEntry(null);
+      setPreview(null);
+      setDownloadResult('');
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function selectEntry(entry: SharedFileEntry) {
+    setSelectedEntry(entry);
+    setPreview(null);
+    setDownloadResult('');
+    if (entry.type !== 'file') return;
+    const kind = previewKind(entry);
+    if (kind === 'download') return;
+    setPreviewBusy(true);
+    try {
+      setPreview(await onPreview(entry.relativePath));
+    } finally {
+      setPreviewBusy(false);
+    }
+  }
+
+  async function downloadEntry(entry = selectedEntry) {
+    if (!entry || entry.type !== 'file') return;
+    setDownloadBusy(true);
+    setDownloadResult('');
+    try {
+      const result = await onDownload(entry.relativePath);
+      if (result?.filePath) setDownloadResult(`已保存到 ${result.filePath}`);
+    } finally {
+      setDownloadBusy(false);
     }
   }
 
@@ -571,6 +662,9 @@ function FilesView({
   useEffect(() => {
     setListing(null);
     setRemotePath('');
+    setSelectedEntry(null);
+    setPreview(null);
+    setDownloadResult('');
     if (peer?.isOnline && peer.trusted) load('');
   }, [peer?.id]);
 
@@ -622,7 +716,14 @@ function FilesView({
           <div className="panelHeader">
             <div>
               <h2>{peer ? `${peerLabel(peer)} 的文件库` : '选择设备'}</h2>
-              <p>{listing?.displayPath || '文件库'}</p>
+              <div className="breadcrumb">
+                {pathCrumbs(remotePath).map((crumb, index, items) => (
+                  <React.Fragment key={crumb.path || 'root'}>
+                    <button disabled={busy || index === items.length - 1} onClick={() => load(crumb.path)}>{crumb.label}</button>
+                    {index < items.length - 1 ? <span>/</span> : null}
+                  </React.Fragment>
+                ))}
+              </div>
             </div>
             <div className="rowActions">
               {remotePath ? <button className="secondary" onClick={() => load(parentPath(remotePath))}>上级</button> : null}
@@ -639,18 +740,66 @@ function FilesView({
               />
             </div>
           </div>
-          {!peer ? <div className="empty">先选择一台设备。</div> : !peer.trusted ? <div className="empty">这台设备还没有被信任。</div> : !peer.isOnline ? <div className="empty">设备离线。</div> : busy ? <div className="empty">正在处理文件...</div> : listing?.entries.length ? (
-            <div className="fileList">
-              {listing.entries.map((entry) => (
-                <button className="fileRow" key={entry.relativePath} onDoubleClick={() => entry.type === 'directory' && load(entry.relativePath)} onClick={() => entry.type === 'file' && onDownload(entry.relativePath)}>
-                  <span className="fileTypeIcon">{entry.type === 'directory' ? <Folder size={17} /> : <FileIcon size={17} />}</span>
-                  <strong>{entry.name}</strong>
-                  <small>{entry.type === 'file' ? formatBytes(entry.size) : ''}</small>
-                  <em>{entry.type === 'directory' ? '打开' : <><Download size={14} /> 下载</>}</em>
-                </button>
-              ))}
+          {!peer ? <div className="empty">先选择一台设备。</div> : !peer.trusted ? <div className="empty">这台设备还没有被信任。</div> : !peer.isOnline ? <div className="empty">设备离线。</div> : busy ? <div className="empty">正在处理文件...</div> : (
+            <div className="remoteFileWorkspace">
+              <div>
+                {listing?.entries.length ? (
+                  <div className="fileList">
+                    <div className="fileListHead">
+                      <span>名称</span>
+                      <span>大小</span>
+                      <span>修改时间</span>
+                      <span>操作</span>
+                    </div>
+                    {listing.entries.map((entry) => (
+                      <div className={`fileRow ${selectedEntry?.relativePath === entry.relativePath ? 'selected' : ''}`} key={entry.relativePath}>
+                        <button className="fileRowMain" onDoubleClick={() => entry.type === 'directory' && load(entry.relativePath)} onClick={() => entry.type === 'directory' ? load(entry.relativePath) : selectEntry(entry)}>
+                          <span className="fileTypeIcon">{fileIcon(entry)}</span>
+                          <strong title={entry.name}>{entry.name}</strong>
+                        </button>
+                        <small>{entry.type === 'file' ? formatBytes(entry.size) : ''}</small>
+                        <small>{formatTime(entry.modifiedAt)}</small>
+                        {entry.type === 'directory' ? (
+                          <button className="linkAction" onClick={() => load(entry.relativePath)}>打开</button>
+                        ) : (
+                          <button className="linkAction" disabled={downloadBusy} onClick={() => downloadEntry(entry)}><Download size={14} /> 下载</button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : <div className="empty">{remotePath ? '没有可显示的文件。' : '远端没有可用文件库。'}</div>}
+              </div>
+              <aside className="previewPane">
+                <div className="previewHeader">
+                  <div>
+                    <h3>{selectedEntry?.name || '选择文件预览'}</h3>
+                    <p>{selectedEntry?.type === 'file' ? `${formatBytes(selectedEntry.size)} · ${preview?.mime || '文件'}` : '图片、视频、音频和 PDF 可直接预览'}</p>
+                  </div>
+                  <button className="secondary" disabled={!selectedEntry || selectedEntry.type !== 'file' || downloadBusy} onClick={() => downloadEntry()}>
+                    <Download size={15} /> {downloadBusy ? '下载中' : '下载'}
+                  </button>
+                </div>
+                {!selectedEntry ? (
+                  <div className="previewEmpty">单击一个文件查看详情，双击文件夹进入目录。</div>
+                ) : selectedEntry.type === 'directory' ? (
+                  <div className="previewEmpty">这是文件夹，双击或点击“打开”进入。</div>
+                ) : previewBusy ? (
+                  <div className="previewEmpty">正在准备在线预览...</div>
+                ) : selectedKind === 'image' && preview ? (
+                  <img className="filePreviewMedia" src={preview.url} alt={selectedEntry.name} />
+                ) : selectedKind === 'video' && preview ? (
+                  <video className="filePreviewMedia" src={preview.url} controls preload="metadata" />
+                ) : selectedKind === 'audio' && preview ? (
+                  <div className="audioPreview"><Music2 size={34} /><audio src={preview.url} controls /></div>
+                ) : selectedKind === 'pdf' && preview ? (
+                  <iframe className="pdfPreview" title={selectedEntry.name} src={preview.url} />
+                ) : (
+                  <div className="previewEmpty">这种文件暂不适合在线预览，可以直接下载。</div>
+                )}
+                {downloadResult ? <p className="downloadResult">{downloadResult}</p> : null}
+              </aside>
             </div>
-          ) : <div className="empty">{remotePath ? '没有可显示的文件。' : '远端没有可用文件库。'}</div>}
+          )}
           {canUpload ? <div className="dropHint">拖拽文件到这里上传到当前目录。</div> : null}
         </section>
       </div>
@@ -659,28 +808,64 @@ function FilesView({
 }
 
 function TasksView({ tasks }: { tasks: TaskRecord[] }) {
+  const [expanded, setExpanded] = useState<string | null>(tasks[0]?.id || null);
   return (
     <section className="workspace">
       <header className="workspaceHeader">
         <div>
           <h1>任务日志</h1>
-          <p>远程命令输出会按设备保存，方便智能体和人工回看。</p>
+          <p>远程命令按设备保存，stdout 和 stderr 分开显示。</p>
         </div>
       </header>
       <div className="taskList">
         {tasks.length ? tasks.map((task) => (
-          <article className="taskItem" key={task.id}>
-            <div className="taskMeta">
-              <strong>{task.peerName}</strong>
+          <article className={`taskItem ${expanded === task.id ? 'expanded' : ''}`} key={task.id}>
+            <button className="taskSummary" onClick={() => setExpanded(expanded === task.id ? null : task.id)}>
               <span className={`statusPill ${task.status}`}>{task.status}</span>
-              <time>{formatTime(task.startedAt)}</time>
-            </div>
+              <strong>{task.peerName}</strong>
+              <span>{formatTime(task.startedAt)}</span>
+              <span>{formatDuration(task.startedAt, task.endedAt)}</span>
+              <span>{task.exitCode === undefined || task.exitCode === null ? '' : `exit ${task.exitCode}`}</span>
+            </button>
             <code>{task.command}</code>
-            <pre>{task.output || task.errorOutput || '等待输出...'}</pre>
+            {expanded === task.id ? (
+              <div className="taskOutputGrid">
+                <section>
+                  <h3>stdout</h3>
+                  <pre>{task.output || '无输出'}</pre>
+                </section>
+                <section>
+                  <h3>stderr</h3>
+                  <pre>{task.errorOutput || '无错误输出'}</pre>
+                </section>
+              </div>
+            ) : (
+              <div className="taskPreview">{(task.output || task.errorOutput || '等待输出...').slice(0, 240)}</div>
+            )}
           </article>
         )) : <div className="empty">暂无任务。</div>}
       </div>
     </section>
+  );
+}
+
+function SetupSteps({ current = 'copy' }: { current?: 'copy' | 'join' | 'trust' | 'ready' }) {
+  const steps = [
+    ['copy', '复制加入密钥'],
+    ['join', '新电脑粘贴加入'],
+    ['trust', '双方点击信任'],
+    ['ready', '回到工作台使用']
+  ] as const;
+  const activeIndex = Math.max(0, steps.findIndex(([id]) => id === current));
+  return (
+    <div className="setupSteps">
+      {steps.map(([id, label], index) => (
+        <div className={index <= activeIndex ? 'done' : ''} key={id}>
+          <span>{index + 1}</span>
+          <strong>{label}</strong>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -702,6 +887,8 @@ function SettingsView({
   const [secretVisible, setSecretVisible] = useState(false);
   const [firewall, setFirewall] = useState<FirewallStatus | null>(null);
   const [firewallBusy, setFirewallBusy] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
   const trustedDevices = Object.values(state.trustedDevices)
     .sort((a, b) => a.name.localeCompare(b.name));
   const pendingPeers = state.peers.filter((peer) => !peer.trusted);
@@ -717,6 +904,14 @@ function SettingsView({
       setFirewallBusy(false);
     }
   }
+  async function checkUpdates() {
+    setUpdateBusy(true);
+    try {
+      setUpdateInfo(await api.checkUpdates());
+    } finally {
+      setUpdateBusy(false);
+    }
+  }
   return (
     <section className="workspace">
       <header className="workspaceHeader">
@@ -726,16 +921,22 @@ function SettingsView({
         </div>
       </header>
       <div className="settingsGrid">
-        <section className="panel">
+        <section className="panel settingsIdentity">
           <h2>本机设备名</h2>
           <div className="inlineEdit">
             <input value={name} onChange={(event) => setName(event.target.value)} />
             <button className="primary" onClick={() => onUpdateName(name)}>保存</button>
           </div>
+          <div className="settingsMeta">
+            <span>设备 ID：{state.device.id.slice(0, 8)}</span>
+            <span>平台：{state.device.platform}</span>
+            <span>控制端口：{state.networkInfo.controlPort}</span>
+          </div>
         </section>
-        <section className="panel">
+        <section className="panel settingsJoin">
           <h2>添加新设备</h2>
-          <p>在新电脑上打开 App，选择“我已有加入密钥”，粘贴下面这串内容即可加入同一个家庭网络。加入后还需要双方手动信任。</p>
+          <p>在新电脑打开最新版 App，选择“我已有加入密钥”，粘贴下面这串内容。新设备出现后，两台电脑都要在这里点击“信任”。</p>
+          <SetupSteps current={pendingPeers.length ? 'trust' : 'copy'} />
           <p className="secretText">{secretVisible ? state.home?.secret : '•••• •••• •••• •••• •••• ••••'}</p>
           <div className="rowActions">
             <button className="secondary" onClick={() => setSecretVisible(!secretVisible)}>
@@ -748,7 +949,7 @@ function SettingsView({
             }}><Clipboard size={16} /> {copied ? '已复制' : '复制加入密钥'}</button>
           </div>
         </section>
-        <section className="panel">
+        <section className="panel settingsTrust">
           <div className="panelHeader">
             <div>
               <h2>设备信任</h2>
@@ -773,7 +974,7 @@ function SettingsView({
             </div>
           ) : <p>没有待信任设备。</p>}
         </section>
-        <section className="panel">
+        <section className="panel settingsTrusted">
           <h2>已信任设备</h2>
           <div className="trustList">
             {trustedDevices.map((device) => (
@@ -789,10 +990,31 @@ function SettingsView({
             ))}
           </div>
         </section>
-        <section className="panel">
+        <section className="panel settingsUpdate">
+          <div className="panelHeader">
+            <div>
+              <h2>版本更新</h2>
+              <p>当前版本：{APP_VERSION}。通过 GitHub Releases 获取最新版。</p>
+            </div>
+            <span className={`statusPill ${updateInfo?.updateAvailable ? 'permission' : 'online'}`}>
+              {updateInfo?.updateAvailable ? '有新版本' : '最新检查'}
+            </span>
+          </div>
+          {updateInfo ? (
+            <div className="updateBox">
+              <strong>{updateInfo.updateAvailable ? `可更新到 ${updateInfo.latestVersion}` : `当前已是 ${updateInfo.latestVersion}`}</strong>
+              <span>{updateInfo.assets.length} 个附件 · {updateInfo.publishedAt ? formatTime(Date.parse(updateInfo.publishedAt)) : ''}</span>
+            </div>
+          ) : <p>点击检查后会读取 GitHub 的 latest release。未签名应用建议下载最新版安装包或便携版手动替换。</p>}
+          <div className="rowActions">
+            <button className="secondary" disabled={updateBusy} onClick={checkUpdates}><RefreshCw size={16} /> {updateBusy ? '检查中' : '检查更新'}</button>
+            <button className="primary" onClick={() => api.openLatestRelease()}><Download size={16} /> 打开下载页</button>
+          </div>
+        </section>
+        <section className="panel settingsApi">
           <h2>Local API</h2>
-          <p>仅本机：127.0.0.1:{state.networkInfo.localApiPort}</p>
-          <p>CLI：lch devices / lch run --all "hostname" / lch screenshot --device &lt;id&gt;</p>
+          <p>仅本机监听：127.0.0.1:{state.networkInfo.localApiPort}</p>
+          <p>常用命令：lch devices、lch run --all "hostname"、lch file get --device &lt;设备&gt; &lt;路径&gt;</p>
         </section>
         <section className="panel firewallPanel">
           <h2>Windows 防火墙</h2>
@@ -1306,8 +1528,10 @@ function App() {
     try {
       const result = await action();
       if (result && typeof result === 'object' && 'device' in result) setState(result as AppStateView);
+      return result;
     } catch (err: any) {
       setError(err?.message || String(err));
+      return undefined;
     }
   }
 
@@ -1520,7 +1744,8 @@ function App() {
           onClearFolder={() => run(() => api.clearSharedFolder())}
           onSetFileSharing={(enabled) => run(() => api.setFileSharing(enabled))}
           onListRemote={(relativePath) => api.listSharedFiles(selectedPeer!.id, relativePath) as Promise<SharedFolderListing>}
-          onDownload={(relativePath) => run(() => api.downloadSharedFile(selectedPeer!.id, relativePath)) as Promise<void>}
+          onPreview={(relativePath) => api.previewSharedFile(selectedPeer!.id, relativePath)}
+          onDownload={(relativePath) => run(() => api.downloadSharedFile(selectedPeer!.id, relativePath)) as Promise<{ filePath: string; name: string; size: number } | void>}
           onUpload={(relativePath, file) => run(async () => {
             const base64 = await readFileAsBase64(file);
             await api.uploadSharedFile(selectedPeer!.id, relativePath, { name: file.name, size: file.size, base64 });

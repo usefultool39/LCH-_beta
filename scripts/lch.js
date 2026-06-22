@@ -566,10 +566,13 @@ async function fileCommand(args) {
     const relativePath = args.shift();
     if (!relativePath) throw new Error('Missing remote path');
     const out = takeOption(args, '--out');
-    const remoteFile = await request('POST', '/api/files/get', { peerId, relativePath });
-    const filePath = out || path.join(process.cwd(), path.basename(remoteFile.name || relativePath));
-    fs.writeFileSync(filePath, Buffer.from(String(remoteFile.base64 || ''), 'base64'));
-    jsonOutput ? printJson({ peerId, filePath, name: remoteFile.name, size: remoteFile.size }) : console.log(filePath);
+    const downloaded = await request('POST', '/api/files/download', { peerId, relativePath });
+    let filePath = downloaded.filePath;
+    if (out) {
+      fs.renameSync(downloaded.filePath, out);
+      filePath = out;
+    }
+    jsonOutput ? printJson({ peerId, filePath, name: downloaded.name, size: downloaded.size }) : console.log(filePath);
     return;
   }
   const localPath = args.shift();

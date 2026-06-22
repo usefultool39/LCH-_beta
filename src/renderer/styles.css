@@ -866,7 +866,7 @@ textarea:focus {
 
 .fileLayout {
   display: grid;
-  grid-template-columns: 330px minmax(0, 1fr);
+  grid-template-columns: 300px minmax(0, 1fr);
   gap: 16px;
   padding: 18px 22px;
 }
@@ -881,7 +881,8 @@ textarea:focus {
 }
 
 .remotePanel {
-  min-height: 480px;
+  min-height: 560px;
+  min-width: 0;
 }
 
 .fileSharePanel {
@@ -921,26 +922,85 @@ textarea:focus {
   box-shadow: inset 0 0 0 2px rgba(37, 99, 235, 0.16);
 }
 
-.fileList {
-  margin-top: 12px;
-  border-top: 1px solid #eef2f7;
+.breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+  color: #94a3b8;
+  font-size: 13px;
 }
 
+.breadcrumb button {
+  border: 0;
+  padding: 0;
+  color: #2563eb;
+  background: transparent;
+  font-weight: 700;
+}
+
+.breadcrumb button:disabled {
+  color: #64748b;
+  opacity: 1;
+}
+
+.remoteFileWorkspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
+  gap: 16px;
+  min-height: 0;
+  margin-top: 12px;
+}
+
+.fileList {
+  border: 1px solid #e5edf7;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.fileListHead,
 .fileRow {
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) 110px 92px;
+  grid-template-columns: minmax(220px, 1fr) 96px 132px 88px;
   gap: 10px;
   width: 100%;
   align-items: center;
   border: 0;
   border-bottom: 1px solid #eef2f7;
-  padding: 11px 0;
+  padding: 9px 10px;
   text-align: left;
-  background: transparent;
 }
 
-.fileRow:hover {
+.fileListHead {
+  color: #64748b;
+  background: #f8fafc;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.fileRow {
+  background: white;
+}
+
+.fileRow:hover,
+.fileRow.selected {
   background: #f8fbff;
+}
+
+.fileRow.selected {
+  box-shadow: inset 3px 0 0 #2563eb;
+}
+
+.fileRowMain {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  text-align: left;
+  background: transparent;
 }
 
 .fileRow strong {
@@ -955,16 +1015,16 @@ textarea:focus {
   font-size: 13px;
 }
 
-.fileRow em {
+.linkAction {
   display: inline-flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: center;
   gap: 5px;
+  border: 0;
   color: #2563eb;
+  background: transparent;
   font-size: 13px;
-  font-style: normal;
   font-weight: 700;
-  text-align: right;
 }
 
 .fileTypeIcon {
@@ -986,6 +1046,92 @@ textarea:focus {
   background: #f8fafc;
   font-size: 13px;
   text-align: center;
+}
+
+.previewPane {
+  display: grid;
+  grid-template-rows: auto minmax(260px, 1fr) auto;
+  min-width: 0;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fbfdff;
+}
+
+.previewHeader {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  padding: 12px;
+  border-bottom: 1px solid #e5edf7;
+  background: white;
+}
+
+.previewHeader h3,
+.previewHeader p {
+  margin: 0;
+}
+
+.previewHeader h3 {
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.previewHeader p {
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.previewEmpty {
+  display: grid;
+  place-items: center;
+  min-height: 260px;
+  padding: 24px;
+  color: #64748b;
+  text-align: center;
+  line-height: 1.6;
+}
+
+.filePreviewMedia {
+  width: 100%;
+  max-height: 520px;
+  align-self: center;
+  object-fit: contain;
+  background: #0f172a;
+}
+
+.audioPreview {
+  display: grid;
+  place-items: center;
+  gap: 18px;
+  min-height: 260px;
+  color: #2563eb;
+}
+
+.audioPreview audio {
+  width: min(320px, 90%);
+}
+
+.pdfPreview {
+  width: 100%;
+  min-height: 520px;
+  border: 0;
+  background: white;
+}
+
+.downloadResult {
+  margin: 0;
+  border-top: 1px solid #e5edf7;
+  padding: 10px 12px;
+  color: #166534;
+  background: #ecfdf5;
+  font-size: 12px;
+  word-break: break-all;
 }
 
 .trustList {
@@ -1026,17 +1172,66 @@ textarea:focus {
 }
 
 .taskItem {
-  padding: 14px;
+  overflow: hidden;
+}
+
+.taskSummary {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr) 150px 72px 72px;
+  gap: 10px;
+  width: 100%;
+  align-items: center;
+  border: 0;
+  border-bottom: 1px solid #eef2f7;
+  padding: 12px 14px;
+  color: #334155;
+  text-align: left;
+  background: #f8fafc;
+}
+
+.taskSummary strong,
+.taskSummary span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.taskSummary span:not(.statusPill) {
+  color: #64748b;
+  font-size: 12px;
 }
 
 .taskItem code {
   display: block;
-  margin: 10px 0;
+  margin: 12px 14px;
   color: #0f172a;
   font-family: Consolas, "SFMono-Regular", monospace;
+  overflow-wrap: anywhere;
 }
 
-.taskItem pre {
+.taskPreview {
+  margin: 0 14px 14px;
+  color: #64748b;
+  font-family: Consolas, "SFMono-Regular", monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.taskOutputGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 0 14px 14px;
+}
+
+.taskOutputGrid h3 {
+  margin: 0 0 7px;
+  color: #475569;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.taskOutputGrid pre {
   max-height: 260px;
   overflow: auto;
   margin: 0;
@@ -1048,7 +1243,9 @@ textarea:focus {
 }
 
 .settingsGrid {
-  padding-top: 18px;
+  grid-template-columns: minmax(320px, 0.85fr) minmax(420px, 1.15fr);
+  align-items: start;
+  padding: 18px 22px 22px;
 }
 
 .inlineEdit {
@@ -1056,6 +1253,88 @@ textarea:focus {
   grid-template-columns: minmax(0, 1fr) 80px;
   gap: 10px;
   margin-top: 12px;
+}
+
+.settingsJoin,
+.settingsTrust,
+.settingsTrusted {
+  grid-column: 2;
+}
+
+.settingsIdentity,
+.settingsUpdate,
+.settingsApi,
+.firewallPanel {
+  grid-column: 1;
+}
+
+.settingsMeta {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+  border-top: 1px solid #eef2f7;
+  padding-top: 12px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.setupSteps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.setupSteps div {
+  display: grid;
+  gap: 6px;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  padding: 10px;
+  color: #64748b;
+  background: #f8fafc;
+}
+
+.setupSteps div.done {
+  border-color: #bfdbfe;
+  color: #1d4ed8;
+  background: #eff6ff;
+}
+
+.setupSteps span {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 999px;
+  color: white;
+  background: #94a3b8;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.setupSteps .done span {
+  background: #2563eb;
+}
+
+.setupSteps strong {
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.updateBox {
+  display: grid;
+  gap: 5px;
+  margin: 12px 0;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  padding: 10px;
+  background: #f8fafc;
+}
+
+.updateBox span {
+  color: #64748b;
+  font-size: 12px;
 }
 
 .empty {
@@ -1458,8 +1737,31 @@ textarea:focus {
   }
 
   .commandBand,
-  .fileLayout {
+  .fileLayout,
+  .remoteFileWorkspace,
+  .settingsGrid,
+  .taskOutputGrid {
     grid-template-columns: 1fr;
+  }
+
+  .settingsJoin,
+  .settingsTrust,
+  .settingsTrusted,
+  .settingsIdentity,
+  .settingsUpdate,
+  .settingsApi,
+  .firewallPanel {
+    grid-column: auto;
+  }
+
+  .fileListHead,
+  .fileRow {
+    grid-template-columns: minmax(180px, 1fr) 88px 0 78px;
+  }
+
+  .fileListHead span:nth-child(3),
+  .fileRow > small:nth-of-type(2) {
+    display: none;
   }
 
   .workbenchGrid {

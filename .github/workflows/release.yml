@@ -1,4 +1,4 @@
-name: Release
+﻿name: Release
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to rebuild, for example v0.3.0"
+        description: "Release tag to rebuild, for example v0.4.0"
         required: true
         type: string
 

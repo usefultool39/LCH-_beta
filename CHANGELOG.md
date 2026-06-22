@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.4.0
+
+- Add token-based streaming downloads for shared files up to 20 GB, avoiding the previous 100 MB base64 download path for file-library downloads.
+- Add online previews for shared images, videos, audio, and PDFs from remote devices with Range support for media playback.
+- Redesign the file hub with breadcrumbs, clearer file rows, explicit selection, a preview pane, and separate download actions.
+- Improve Windows remote command encoding by forcing PowerShell UTF-8 output before running commands.
+- Redesign task logs with compact summaries and separate stdout/stderr panes.
+- Clarify new-device pairing and trust steps in Settings, and add a GitHub latest-release update check with a one-click downloads entry.
+
 ## v0.3.0
 
 - Prepare the project for public source release with an MIT license, clearer install/pairing documentation, and a public-release checklist.

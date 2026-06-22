@@ -1,4 +1,4 @@
-import type { AppStateView, DevicePreference, FirewallStatus, RemoteInputEvent, RemoteOpenResult, RemoteScreenshotResult, RemoteSessionRecord, ScreenSignalEvent, TerminalOutputEvent } from '../shared/protocol';
+import type { AppStateView, DevicePreference, FirewallStatus, RemoteInputEvent, RemoteOpenResult, RemoteScreenshotResult, RemoteSessionRecord, ScreenSignalEvent, SharedFileToken, TerminalOutputEvent } from '../shared/protocol';
 
 declare global {
   interface Window {
@@ -7,6 +7,8 @@ declare global {
       getRemoteSessions: () => Promise<RemoteSessionRecord[]>;
       getFirewallStatus: () => Promise<FirewallStatus>;
       repairFirewall: (elevated?: boolean) => Promise<FirewallStatus>;
+      checkUpdates: () => Promise<{ currentVersion: string; latestVersion: string; tag: string; updateAvailable: boolean; url: string; publishedAt?: string; assets: Array<{ name: string; size: number; url: string }> }>;
+      openLatestRelease: () => Promise<void>;
       createHome: (name: string) => Promise<AppStateView>;
       joinHome: (secret: string, name: string) => Promise<AppStateView>;
       updateName: (name: string) => Promise<AppStateView>;
@@ -20,7 +22,8 @@ declare global {
       sendText: (peerId: string, text: string) => Promise<AppStateView>;
       sendFile: (peerId: string, file: { name: string; size: number; base64: string }) => Promise<AppStateView>;
       listSharedFiles: (peerId: string, relativePath: string) => Promise<unknown>;
-      downloadSharedFile: (peerId: string, relativePath: string) => Promise<{ filePath: string }>;
+      downloadSharedFile: (peerId: string, relativePath: string) => Promise<{ filePath: string; name: string; size: number }>;
+      previewSharedFile: (peerId: string, relativePath: string) => Promise<SharedFileToken & { url: string }>;
       uploadSharedFile: (peerId: string, relativePath: string, file: { name: string; size: number; base64: string }) => Promise<unknown>;
       runCommand: (peerIds: string[], command: string, cwd?: string) => Promise<{ taskIds: string[] }>;
       openTerminal: (peerId: string) => Promise<{ sessionId: string; terminalId: string; shell: string }>;

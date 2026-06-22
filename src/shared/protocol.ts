@@ -1,5 +1,5 @@
 export const APP_NAME = 'Lan Control Hub';
-export const APP_VERSION = '0.3.0';
+export const APP_VERSION = '0.4.0';
 
 export const DISCOVERY_PORT = 46880;
 export const DEFAULT_CONTROL_PORT = 46881;
@@ -11,6 +11,7 @@ export const PEER_TIMEOUT_MS = 20000;
 export const COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
 export const MAX_TASK_OUTPUT_BYTES = 5 * 1024 * 1024;
 export const MAX_FILE_BYTES = 100 * 1024 * 1024;
+export const MAX_STREAM_FILE_BYTES = 20 * 1024 * 1024 * 1024;
 export const MAX_LOCAL_API_BODY_BYTES = Math.ceil(MAX_FILE_BYTES * 4 / 3) + 1024 * 1024;
 export const MAX_CONTROL_MESSAGE_BYTES = Math.ceil(MAX_LOCAL_API_BODY_BYTES * 4 / 3) + 2 * 1024 * 1024;
 export const MAX_CONVERSATION_EVENTS = 1000;
@@ -261,6 +262,15 @@ export interface SharedFolderListing {
     modifiedAt: number;
     writable?: boolean;
   }>;
+}
+
+export interface SharedFileToken {
+  token: string;
+  name: string;
+  relativePath: string;
+  size: number;
+  mime: string;
+  expiresAt: number;
 }
 
 export interface TerminalOutputEvent {
