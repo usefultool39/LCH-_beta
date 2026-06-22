@@ -1,8 +1,12 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
 const api = {
   getState: () => ipcRenderer.invoke('lch:get-state'),
   getRemoteSessions: () => ipcRenderer.invoke('lch:get-remote-sessions'),
+  getTransfers: () => ipcRenderer.invoke('lch:get-transfers'),
+  cancelTransfer: (transferId: string) => ipcRenderer.invoke('lch:cancel-transfer', transferId),
+  showFile: (filePath: string) => ipcRenderer.invoke('lch:show-file', filePath),
+  openPath: (filePath: string) => ipcRenderer.invoke('lch:open-path', filePath),
   getFirewallStatus: () => ipcRenderer.invoke('lch:get-firewall-status'),
   repairFirewall: (elevated?: boolean) => ipcRenderer.invoke('lch:repair-firewall', elevated),
   checkUpdates: () => ipcRenderer.invoke('lch:check-updates'),
@@ -14,6 +18,8 @@ const api = {
   setFileSharing: (enabled: boolean) => ipcRenderer.invoke('lch:set-file-sharing', enabled),
   setAutoTrust: (enabled: boolean) => ipcRenderer.invoke('lch:set-auto-trust', enabled),
   connectManualPeer: (address: string) => ipcRenderer.invoke('lch:connect-manual-peer', address),
+  removeManualPeer: (address: string) => ipcRenderer.invoke('lch:remove-manual-peer', address),
+  refreshManualPeers: () => ipcRenderer.invoke('lch:refresh-manual-peers'),
   trustDevice: (peerId: string) => ipcRenderer.invoke('lch:trust-device', peerId),
   revokeDevice: (peerId: string) => ipcRenderer.invoke('lch:revoke-device', peerId),
   chooseSharedFolder: () => ipcRenderer.invoke('lch:choose-shared-folder'),
@@ -24,6 +30,8 @@ const api = {
   downloadSharedFile: (peerId: string, relativePath: string) => ipcRenderer.invoke('lch:download-shared-file', peerId, relativePath),
   previewSharedFile: (peerId: string, relativePath: string) => ipcRenderer.invoke('lch:preview-shared-file', peerId, relativePath),
   uploadSharedFile: (peerId: string, relativePath: string, file: { name: string; size: number; base64: string }) => ipcRenderer.invoke('lch:upload-shared-file', peerId, relativePath, file),
+  getFilePath: (file: File) => webUtils.getPathForFile(file),
+  uploadSharedFileStream: (peerId: string, relativePath: string, localPath: string) => ipcRenderer.invoke('lch:upload-shared-file-stream', peerId, relativePath, localPath),
   runCommand: (peerIds: string[], command: string, cwd?: string) => ipcRenderer.invoke('lch:run-command', peerIds, command, cwd),
   openTerminal: (peerId: string) => ipcRenderer.invoke('lch:open-terminal', peerId),
   terminalInput: (peerId: string, terminalId: string, input: string) => ipcRenderer.invoke('lch:terminal-input', peerId, terminalId, input),

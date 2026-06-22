@@ -1,10 +1,14 @@
-import type { AppStateView, DevicePreference, FirewallStatus, RemoteInputEvent, RemoteOpenResult, RemoteScreenshotResult, RemoteSessionRecord, ScreenSignalEvent, SharedFileToken, TerminalOutputEvent } from '../shared/protocol';
+import type { AppStateView, DevicePreference, FirewallStatus, RemoteInputEvent, RemoteOpenResult, RemoteScreenshotResult, RemoteSessionRecord, ScreenSignalEvent, SharedFileToken, TerminalOutputEvent, TransferRecord } from '../shared/protocol';
 
 declare global {
   interface Window {
     lanControlHub: {
       getState: () => Promise<AppStateView>;
       getRemoteSessions: () => Promise<RemoteSessionRecord[]>;
+      getTransfers: () => Promise<TransferRecord[]>;
+      cancelTransfer: (transferId: string) => Promise<TransferRecord>;
+      showFile: (filePath: string) => Promise<boolean>;
+      openPath: (filePath: string) => Promise<string>;
       getFirewallStatus: () => Promise<FirewallStatus>;
       repairFirewall: (elevated?: boolean) => Promise<FirewallStatus>;
       checkUpdates: () => Promise<{ currentVersion: string; latestVersion: string; tag: string; updateAvailable: boolean; url: string; publishedAt?: string; assets: Array<{ name: string; size: number; url: string }> }>;
@@ -16,6 +20,8 @@ declare global {
       setFileSharing: (enabled: boolean) => Promise<AppStateView>;
       setAutoTrust: (enabled: boolean) => Promise<AppStateView>;
       connectManualPeer: (address: string) => Promise<AppStateView>;
+      removeManualPeer: (address: string) => Promise<AppStateView>;
+      refreshManualPeers: () => Promise<AppStateView>;
       trustDevice: (peerId: string) => Promise<AppStateView>;
       revokeDevice: (peerId: string) => Promise<AppStateView>;
       chooseSharedFolder: () => Promise<AppStateView>;
@@ -26,6 +32,8 @@ declare global {
       downloadSharedFile: (peerId: string, relativePath: string) => Promise<{ filePath: string; name: string; size: number }>;
       previewSharedFile: (peerId: string, relativePath: string) => Promise<SharedFileToken & { url: string }>;
       uploadSharedFile: (peerId: string, relativePath: string, file: { name: string; size: number; base64: string }) => Promise<unknown>;
+      getFilePath: (file: File) => string;
+      uploadSharedFileStream: (peerId: string, relativePath: string, localPath: string) => Promise<unknown>;
       runCommand: (peerIds: string[], command: string, cwd?: string) => Promise<{ taskIds: string[] }>;
       openTerminal: (peerId: string) => Promise<{ sessionId: string; terminalId: string; shell: string }>;
       terminalInput: (peerId: string, terminalId: string, input: string) => Promise<unknown>;

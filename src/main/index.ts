@@ -31,8 +31,10 @@ import {
   MAX_STREAM_FILE_BYTES,
   MAX_LOCAL_API_BODY_BYTES,
   MAX_TASK_OUTPUT_BYTES,
+  MAX_TRANSFER_RECORDS,
   NetworkInfo,
   PEER_TIMEOUT_MS,
+  STATE_SCHEMA_VERSION,
   PeerInfo,
   RemoteInputEvent,
   RemoteOpenResult,
@@ -43,6 +45,7 @@ import {
   SharedFileToken,
   SharedFolderListing,
   TaskRecord,
+  TransferRecord,
   TrustedDevice,
   isDiscoveryPacket
 } from '../shared/protocol';
@@ -54,6 +57,7 @@ import { blockedDeviceFromTrust, isDeviceBlocked, isDeviceTrusted, trustedDevice
 type RuntimePeer = PeerInfo;
 
 type AppState = {
+  stateVersion: number;
   home: null | {
     id: string;
     name: string;
@@ -78,7 +82,19 @@ type AppState = {
   fileShareEnabled: boolean;
   autoTrustDevices: boolean;
   localApiToken: string;
-  manualPeerAddresses: string[];
+  manualPeerAddresses: Array<{
+    address: string;
+    host: string;
+    port: number;
+    label: string;
+    status: 'unknown' | 'online' | 'offline' | 'home-mismatch' | 'invalid' | 'self';
+    lastCheckedAt?: number;
+    lastSeenAt?: number;
+    lastError?: string;
+    peerId?: string;
+    peerName?: string;
+  }>;
+  transfers: TransferRecord[];
 };
 
 type TerminalSession = {
@@ -97,6 +113,12 @@ type RunningTask = {
 type SharedDownloadToken = SharedFileToken & {
   requesterId: string;
   target: string;
+};
+
+type SharedUploadToken = SharedFileToken & {
+  requesterId: string;
+  targetDirectory: string;
+  currentPath: string;
 };
 
 const DEFAULT_HOME_NAME = '我的局域网';
@@ -127,6 +149,9 @@ const remoteWindowClosingByMain = new Set<string>();
 const localSseClients = new Set<http.ServerResponse>();
 const controlReplayGuard = new ControlReplayGuard();
 const sharedDownloadTokens = new Map<string, SharedDownloadToken>();
+const sharedUploadTokens = new Map<string, SharedUploadToken>();
+const transferAbortControllers = new Map<string, AbortController>();
+const presenceRateLimit = new Map<string, { windowStart: number; count: number }>();
 let remoteInputChain: Promise<unknown> = Promise.resolve();
 let nutRuntime: Promise<any> | null = null;
 
@@ -168,6 +193,23 @@ function logRuntimeError(label: string, error: unknown) {
   } catch {
     // Avoid recursive failures while logging crash diagnostics.
   }
+}
+
+function allowPresenceRequest(req: http.IncomingMessage) {
+  const key = req.socket.remoteAddress || 'unknown';
+  const now = Date.now();
+  const current = presenceRateLimit.get(key);
+  if (!current || now - current.windowStart > 60_000) {
+    presenceRateLimit.set(key, { windowStart: now, count: 1 });
+    if (presenceRateLimit.size > 512) {
+      for (const [address, item] of presenceRateLimit) {
+        if (now - item.windowStart > 60_000) presenceRateLimit.delete(address);
+      }
+    }
+    return true;
+  }
+  current.count += 1;
+  return current.count <= 120;
 }
 
 function refreshWindowsFirewallRules() {
@@ -354,6 +396,7 @@ function createDeviceIdentity() {
 
 function createDefaultState(): AppState {
   return {
+    stateVersion: STATE_SCHEMA_VERSION,
     home: null,
     device: createDeviceIdentity(),
     trustedDevices: {},
@@ -366,8 +409,68 @@ function createDefaultState(): AppState {
     fileShareEnabled: true,
     autoTrustDevices: false,
     localApiToken: base64url(crypto.randomBytes(32)),
-    manualPeerAddresses: []
+    manualPeerAddresses: [],
+    transfers: []
   };
+}
+
+function normalizeManualPeerAddress(value: any) {
+  const raw = typeof value === 'string' ? value : String(value?.address || value?.label || '');
+  try {
+    const candidate = manualPeerCandidates(raw)[0];
+    const existing = typeof value === 'object' && value ? value : {};
+    return {
+      address: candidate.label,
+      host: candidate.host,
+      port: candidate.port,
+      label: candidate.label,
+      status: existing.status || 'unknown',
+      lastCheckedAt: existing.lastCheckedAt,
+      lastSeenAt: existing.lastSeenAt,
+      lastError: existing.lastError,
+      peerId: existing.peerId,
+      peerName: existing.peerName
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizeManualPeerAddresses(values: any[] = []) {
+  const seen = new Set<string>();
+  const output: AppState['manualPeerAddresses'] = [];
+  for (const item of values) {
+    const normalized = normalizeManualPeerAddress(item);
+    if (!normalized || seen.has(normalized.address)) continue;
+    seen.add(normalized.address);
+    output.push(normalized);
+  }
+  return output.slice(-100);
+}
+
+function normalizeTransferRecords(records: any[] = []) {
+  return records
+    .filter((record) => record?.id && record?.peerId && record?.name)
+    .map((record) => ({
+      id: String(record.id),
+      direction: record.direction === 'upload' ? 'upload' as const : 'download' as const,
+      peerId: String(record.peerId),
+      peerName: String(record.peerName || record.peerId),
+      name: String(record.name),
+      relativePath: record.relativePath ? String(record.relativePath) : undefined,
+      targetPath: record.targetPath ? String(record.targetPath) : undefined,
+      localPath: record.localPath ? String(record.localPath) : undefined,
+      size: Number(record.size || 0),
+      transferredBytes: Number(record.transferredBytes || 0),
+      status: ['queued', 'running', 'completed', 'failed', 'cancelled'].includes(record.status) ? record.status : 'failed',
+      startedAt: Number(record.startedAt || Date.now()),
+      updatedAt: Number(record.updatedAt || Date.now()),
+      endedAt: record.endedAt ? Number(record.endedAt) : undefined,
+      speedBytesPerSecond: record.speedBytesPerSecond ? Number(record.speedBytesPerSecond) : undefined,
+      sha256: record.sha256 ? String(record.sha256) : undefined,
+      error: record.error ? String(record.error) : undefined
+    }))
+    .slice(0, MAX_TRANSFER_RECORDS);
 }
 
 function normalizeTaskRecords(tasks: TaskRecord[] = []) {
@@ -392,6 +495,7 @@ function loadState(): AppState {
       const publicKey = parsed.device.publicKey || '';
       return {
         home: parsed.home || null,
+        stateVersion: STATE_SCHEMA_VERSION,
         device: {
           id: parsed.device.id,
           name: parsed.device.name || os.hostname(),
@@ -410,9 +514,8 @@ function loadState(): AppState {
         fileShareEnabled: (parsed as any).fileShareEnabled !== false,
         autoTrustDevices: Boolean((parsed as any).autoTrustDevices),
         localApiToken: parsed.localApiToken || base64url(crypto.randomBytes(32)),
-        manualPeerAddresses: Array.isArray((parsed as any).manualPeerAddresses)
-          ? (parsed as any).manualPeerAddresses.map(String).slice(0, 100)
-          : []
+        manualPeerAddresses: normalizeManualPeerAddresses(Array.isArray((parsed as any).manualPeerAddresses) ? (parsed as any).manualPeerAddresses : []),
+        transfers: normalizeTransferRecords((parsed as any).transfers || [])
       };
     }
   } catch {
@@ -562,6 +665,8 @@ function serializePeers() {
         room: preference.room,
         favorite: Boolean(preference.favorite),
         readOnly: Boolean(preference.readOnly),
+        notificationsMuted: Boolean(preference.notificationsMuted),
+        unreadCount: Number(preference.unreadCount || 0),
         lastControlledAt: preference.lastControlledAt,
         displayName: preference.alias || peer.name
       };
@@ -638,6 +743,7 @@ function upsertRemoteSession(
 
 function appStateView() {
   return {
+    stateVersion: STATE_SCHEMA_VERSION,
     home: state.home,
     device: {
       id: state.device.id,
@@ -660,6 +766,7 @@ function appStateView() {
     fileShareEnabled: state.fileShareEnabled,
     autoTrustDevices: state.autoTrustDevices,
     manualPeerAddresses: state.manualPeerAddresses,
+    transfers: state.transfers.slice(0, MAX_TRANSFER_RECORDS),
     networkInfo: networkInfo()
   };
 }
@@ -715,11 +822,15 @@ function updateDevicePreference(peerId: string, patch: Partial<DevicePreference>
     room: patch.room !== undefined ? String(patch.room || '').trim().slice(0, 28) : current.room,
     notes: patch.notes !== undefined ? String(patch.notes || '').trim().slice(0, 160) : current.notes,
     favorite: patch.favorite !== undefined ? Boolean(patch.favorite) : Boolean(current.favorite),
-    readOnly: patch.readOnly !== undefined ? Boolean(patch.readOnly) : Boolean(current.readOnly)
+    readOnly: patch.readOnly !== undefined ? Boolean(patch.readOnly) : Boolean(current.readOnly),
+    notificationsMuted: patch.notificationsMuted !== undefined ? Boolean(patch.notificationsMuted) : Boolean(current.notificationsMuted),
+    unreadCount: patch.unreadCount !== undefined ? Math.max(0, Number(patch.unreadCount) || 0) : current.unreadCount
   };
   if (!next.alias) delete next.alias;
   if (!next.room) delete next.room;
   if (!next.notes) delete next.notes;
+  if (!next.notificationsMuted) delete next.notificationsMuted;
+  if (!next.unreadCount) delete next.unreadCount;
   state.devicePreferences[id] = next;
   addAudit('device.preference', `更新设备偏好 ${id}`, state.device.id, id);
   saveState();
@@ -806,6 +917,7 @@ function focusMainWindow() {
 }
 
 function notifyConversationEvent(peerId: string, event: any) {
+  if (state.devicePreferences[peerId]?.notificationsMuted) return;
   if (!shouldShowIncomingNotification()) return;
   const sender = event.senderName || peerDisplayName(peerId, '远程设备');
   const isFile = event.type === 'file';
@@ -842,6 +954,13 @@ function formatBytesForNotification(size = 0) {
 
 function addConversationEvent(peerId: string, event: any) {
   const { notify, ...storedEvent } = event || {};
+  if (storedEvent.direction === 'incoming' && notify !== false) {
+    const current = state.devicePreferences[peerId] || {};
+    state.devicePreferences[peerId] = {
+      ...current,
+      unreadCount: Math.min(999, Number(current.unreadCount || 0) + 1)
+    };
+  }
   if (!state.conversations[peerId]) state.conversations[peerId] = [];
   state.conversations[peerId].push({
     id: crypto.randomUUID(),
@@ -1093,10 +1212,13 @@ function manualPeerCandidates(address: string) {
   const withScheme = /^https?:\/\//i.test(raw) ? raw : `http://${raw}`;
   const parsed = new URL(withScheme);
   if (parsed.protocol !== 'http:') throw new Error('远程地址只支持 http/Tailscale IP，不要直接暴露到公网 https');
-  if (parsed.port) return [{ url: `${parsed.protocol}//${parsed.host}/api/presence`, host: parsed.hostname, label: parsed.host }];
+  if (parsed.port) {
+    const port = Number(parsed.port);
+    return [{ url: `${parsed.protocol}//${parsed.host}/api/presence`, host: parsed.hostname, port, label: parsed.host }];
+  }
   const output = [];
   for (let port = DEFAULT_WEB_PORT; port <= DEFAULT_WEB_PORT + 30; port += 1) {
-    output.push({ url: `${parsed.protocol}//${parsed.hostname}:${port}/api/presence`, host: parsed.hostname, label: `${parsed.hostname}:${port}` });
+    output.push({ url: `${parsed.protocol}//${parsed.hostname}:${port}/api/presence`, host: parsed.hostname, port, label: `${parsed.hostname}:${port}` });
   }
   return output;
 }
@@ -1111,7 +1233,7 @@ async function probeManualPeer(address: string) {
       if (!state.home || packet.homeId !== state.home.id) throw new Error('远程设备不在当前家庭网络，请确认加入密钥一致');
       if (packet.device.id === state.device.id) throw new Error('不能添加本机地址');
       rememberPeer(packet, candidate.host);
-      return { packet, address: candidate.label };
+      return { packet, address: candidate.label, host: candidate.host, port: candidate.port };
     } catch (error) {
       lastError = error;
     }
@@ -1120,20 +1242,73 @@ async function probeManualPeer(address: string) {
 }
 
 async function connectManualPeer(address: string) {
-  const result = await probeManualPeer(address);
-  if (!state.manualPeerAddresses.includes(result.address)) {
-    state.manualPeerAddresses.push(result.address);
+  const candidates = manualPeerCandidates(address);
+  const primary = candidates[0];
+  let record = state.manualPeerAddresses.find((item) => item.address === primary.label);
+  if (!record) {
+    record = {
+      address: primary.label,
+      host: primary.host,
+      port: primary.port,
+      label: primary.label,
+      status: 'unknown'
+    };
+    state.manualPeerAddresses.push(record);
     state.manualPeerAddresses = state.manualPeerAddresses.slice(-100);
   }
-  saveState();
-  emitState();
+  record.lastCheckedAt = Date.now();
+  try {
+    const result = await probeManualPeer(address);
+    record.address = result.address;
+    record.host = result.host;
+    record.port = result.port;
+    record.label = result.address;
+    record.status = 'online';
+    record.lastSeenAt = Date.now();
+    record.lastError = undefined;
+    record.peerId = result.packet.device.id;
+    record.peerName = result.packet.device.name;
+  } catch (error: any) {
+    record.status = String(error?.message || '').includes('家庭网络') ? 'home-mismatch'
+      : String(error?.message || '').includes('本机') ? 'self'
+        : 'offline';
+    record.lastError = error?.message || String(error);
+    throw error;
+  } finally {
+    saveState();
+    emitState();
+  }
   return appStateView();
 }
 
 async function refreshManualPeers() {
   if (!state?.home || !state.manualPeerAddresses.length) return;
-  await Promise.allSettled(state.manualPeerAddresses.map((address) => probeManualPeer(address)));
+  const results = await Promise.allSettled(state.manualPeerAddresses.map((item) => probeManualPeer(item.address)));
+  results.forEach((result, index) => {
+    const record = state.manualPeerAddresses[index];
+    record.lastCheckedAt = Date.now();
+    if (result.status === 'fulfilled') {
+      record.status = 'online';
+      record.lastSeenAt = Date.now();
+      record.lastError = undefined;
+      record.peerId = result.value.packet.device.id;
+      record.peerName = result.value.packet.device.name;
+    } else {
+      const message = result.reason?.message || String(result.reason);
+      record.status = message.includes('家庭网络') ? 'home-mismatch' : message.includes('本机') ? 'self' : 'offline';
+      record.lastError = message;
+    }
+  });
+  saveState();
   emitState();
+}
+
+function removeManualPeer(address: string) {
+  const clean = String(address || '').trim();
+  state.manualPeerAddresses = state.manualPeerAddresses.filter((item) => item.address !== clean && item.label !== clean);
+  saveState();
+  emitState();
+  return appStateView();
 }
 
 function startDiscovery() {
@@ -1226,6 +1401,10 @@ async function handleControlMessage(payload: { fromId: string; fromName: string;
 
     case 'file.createDownloadToken':
       return { ok: true, data: createSharedDownloadToken(payload.fromId, payload.data?.relativePath || '') };
+
+    case 'file.createUploadToken':
+      assertPeerWritable(payload.fromId);
+      return { ok: true, data: createSharedUploadToken(payload.fromId, payload.data || {}) };
 
     case 'file.uploadShared':
       assertPeerWritable(payload.fromId);
@@ -2119,7 +2298,6 @@ function listSharedFolder(relativePath = ''): SharedFolderListing {
   const stat = fs.statSync(target);
   if (!stat.isDirectory()) throw new Error('目标不是文件夹');
   const entries = fs.readdirSync(target, { withFileTypes: true })
-    .filter((entry) => !entry.name.startsWith('.'))
     .map((entry) => {
       const itemPath = path.join(target, entry.name);
       const itemStat = fs.statSync(itemPath);
@@ -2195,23 +2373,184 @@ function createSharedDownloadToken(requesterId: string, relativePath = ''): Shar
   };
 }
 
+function pruneSharedUploadTokens() {
+  const now = Date.now();
+  for (const [token, item] of sharedUploadTokens) {
+    if (item.expiresAt <= now) sharedUploadTokens.delete(token);
+  }
+}
+
+function createSharedUploadToken(requesterId: string, data: any): SharedFileToken {
+  pruneSharedUploadTokens();
+  const fileName = path.basename(String(data?.name || 'received-file'));
+  const size = Number(data?.size || 0);
+  if (!fileName || !Number.isSafeInteger(size) || size < 0 || size > MAX_STREAM_FILE_BYTES) {
+    throw new Error('上传文件无效或超过 20GB');
+  }
+  const { target, currentPath } = resolveSharedPath(data?.relativePath || '');
+  const stat = fs.statSync(target);
+  if (!stat.isDirectory()) throw new Error('只能上传到文件夹');
+  const token = base64url(crypto.randomBytes(32));
+  const item: SharedUploadToken = {
+    requesterId,
+    token,
+    name: fileName,
+    relativePath: [currentPath, fileName].filter(Boolean).join('/'),
+    size,
+    mime: mimeTypeForFile(fileName),
+    expiresAt: Date.now() + 15 * 60 * 1000,
+    targetDirectory: target,
+    currentPath
+  };
+  sharedUploadTokens.set(token, item);
+  return {
+    token: item.token,
+    name: item.name,
+    relativePath: item.relativePath,
+    size: item.size,
+    mime: item.mime,
+    expiresAt: item.expiresAt
+  };
+}
+
 function sharedFileUrl(peer: Pick<PeerInfo, 'address' | 'webPort'>, token: SharedFileToken) {
   return `http://${peer.address}:${peer.webPort}/api/files/download/${encodeURIComponent(token.token)}/${encodeURIComponent(token.name)}`;
 }
 
-function streamUrlToFile(url: string, filePath: string) {
+function sharedUploadUrl(peer: Pick<PeerInfo, 'address' | 'webPort'>, token: SharedFileToken) {
+  return `http://${peer.address}:${peer.webPort}/api/files/upload/${encodeURIComponent(token.token)}/${encodeURIComponent(token.name)}`;
+}
+
+function trimTransfers() {
+  state.transfers = state.transfers.slice(0, MAX_TRANSFER_RECORDS);
+}
+
+function createTransferRecord(input: Omit<TransferRecord, 'id' | 'transferredBytes' | 'status' | 'startedAt' | 'updatedAt'>) {
+  const now = Date.now();
+  const record: TransferRecord = {
+    id: crypto.randomUUID(),
+    transferredBytes: 0,
+    status: 'queued',
+    startedAt: now,
+    updatedAt: now,
+    ...input
+  };
+  state.transfers.unshift(record);
+  trimTransfers();
+  saveState();
+  emitState();
+  sendLocalSse('transfer-update', record);
+  return record;
+}
+
+function updateTransfer(record: TransferRecord, patch: Partial<TransferRecord>) {
+  Object.assign(record, patch, { updatedAt: Date.now() });
+  if (record.size > 0 && record.startedAt && record.transferredBytes >= 0) {
+    const elapsed = Math.max(1, (Date.now() - record.startedAt) / 1000);
+    record.speedBytesPerSecond = Math.round(record.transferredBytes / elapsed);
+  }
+  saveState();
+  emitState();
+  sendLocalSse('transfer-update', record);
+  return record;
+}
+
+function finishTransfer(record: TransferRecord, status: TransferRecord['status'], patch: Partial<TransferRecord> = {}) {
+  transferAbortControllers.delete(record.id);
+  return updateTransfer(record, {
+    status,
+    endedAt: Date.now(),
+    ...patch
+  });
+}
+
+function cancelTransfer(transferId: string) {
+  const id = String(transferId || '');
+  const record = state.transfers.find((item) => item.id === id);
+  if (!record) throw new Error('传输任务不存在');
+  if (record.status !== 'running' && record.status !== 'queued') return record;
+  transferAbortControllers.get(id)?.abort();
+  finishTransfer(record, 'cancelled', { error: '用户取消' });
+  return record;
+}
+
+function streamUrlToFile(url: string, filePath: string, transfer?: TransferRecord) {
   return new Promise<void>((resolve, reject) => {
+    const controller = transfer ? new AbortController() : null;
+    if (transfer && controller) transferAbortControllers.set(transfer.id, controller);
+    const hash = crypto.createHash('sha256');
+    let transferred = 0;
+    let lastEmit = 0;
     const request = http.get(url, (res) => {
       if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
         res.resume();
         reject(new Error(`下载失败：HTTP ${res.statusCode || 0}`));
         return;
       }
+      res.on('data', (chunk: Buffer) => {
+        transferred += chunk.length;
+        hash.update(chunk);
+        if (transfer && Date.now() - lastEmit > 350) {
+          lastEmit = Date.now();
+          updateTransfer(transfer, { transferredBytes: transferred, status: 'running' });
+        }
+      });
       pipeline(res, fs.createWriteStream(filePath))
-        .then(resolve)
+        .then(() => {
+          if (transfer) updateTransfer(transfer, { transferredBytes: transferred, sha256: hash.digest('hex') });
+          resolve();
+        })
         .catch(reject);
     });
+    controller?.signal.addEventListener('abort', () => request.destroy(new Error('传输已取消')));
     request.on('error', reject);
+  });
+}
+
+function streamFileToUrl(url: string, filePath: string, size: number, transfer: TransferRecord) {
+  return new Promise<void>((resolve, reject) => {
+    const controller = new AbortController();
+    transferAbortControllers.set(transfer.id, controller);
+    const parsed = new URL(url);
+    const hash = crypto.createHash('sha256');
+    let transferred = 0;
+    let lastEmit = 0;
+    const req = http.request({
+      method: 'PUT',
+      host: parsed.hostname,
+      port: parsed.port,
+      path: `${parsed.pathname}${parsed.search}`,
+      headers: {
+        'Content-Length': String(size),
+        'Content-Type': 'application/octet-stream'
+      }
+    }, (res) => {
+      let raw = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { raw += chunk; });
+      res.on('end', () => {
+        if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+          reject(new Error(raw || `上传失败：HTTP ${res.statusCode || 0}`));
+          return;
+        }
+        updateTransfer(transfer, { transferredBytes: size, sha256: hash.digest('hex') });
+        resolve();
+      });
+    });
+    controller.signal.addEventListener('abort', () => req.destroy(new Error('传输已取消')));
+    req.on('error', reject);
+    const stream = fs.createReadStream(filePath);
+    stream.on('data', (chunk) => {
+      const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      transferred += data.length;
+      hash.update(data);
+      if (Date.now() - lastEmit > 350) {
+        lastEmit = Date.now();
+        updateTransfer(transfer, { transferredBytes: transferred, status: 'running' });
+      }
+    });
+    stream.on('error', reject);
+    stream.pipe(req);
   });
 }
 
@@ -2227,10 +2566,23 @@ async function createRemoteSharedFileToken(peerId: string, relativePath: string)
 async function downloadRemoteSharedFile(peerId: string, relativePath: string) {
   const token = await createRemoteSharedFileToken(peerId, relativePath);
   const filePath = uniqueDownloadPath(token.name);
+  const peer = getTrustedPeer(peerId);
+  const transfer = createTransferRecord({
+    direction: 'download',
+    peerId,
+    peerName: peerDisplayName(peerId, peer.name),
+    name: token.name,
+    relativePath: token.relativePath,
+    localPath: filePath,
+    size: token.size
+  });
   try {
-    await streamUrlToFile(token.url, filePath);
+    updateTransfer(transfer, { status: 'running' });
+    await streamUrlToFile(token.url, filePath, transfer);
+    finishTransfer(transfer, 'completed', { transferredBytes: token.size, localPath: filePath });
   } catch (error) {
     fs.rmSync(filePath, { force: true });
+    if (transfer.status !== 'cancelled') finishTransfer(transfer, 'failed', { error: error instanceof Error ? error.message : String(error) });
     throw error;
   }
   addConversationEvent(peerId, {
@@ -2243,7 +2595,40 @@ async function downloadRemoteSharedFile(peerId: string, relativePath: string) {
     notify: false
   });
   addAudit('file.downloadShared', token.name, peerId, state.device.id);
-  return { filePath, name: token.name, size: token.size };
+  return { filePath, name: token.name, size: token.size, transferId: transfer.id, sha256: transfer.sha256 };
+}
+
+async function uploadRemoteSharedFile(peerId: string, relativePath: string, localPath: string) {
+  assertPeerWritable(peerId);
+  const peer = getTrustedPeer(peerId);
+  const stat = fs.statSync(localPath);
+  if (!stat.isFile()) throw new Error('本地路径不是文件');
+  if (stat.size > MAX_STREAM_FILE_BYTES) throw new Error('上传文件超过 20GB');
+  const name = path.basename(localPath);
+  const token = await sendControl<SharedFileToken>(peerId, 'file.createUploadToken', {
+    relativePath,
+    name,
+    size: stat.size
+  }, 15000);
+  const transfer = createTransferRecord({
+    direction: 'upload',
+    peerId,
+    peerName: peerDisplayName(peerId, peer.name),
+    name,
+    relativePath,
+    localPath,
+    targetPath: token.relativePath,
+    size: stat.size
+  });
+  try {
+    updateTransfer(transfer, { status: 'running' });
+    await streamFileToUrl(sharedUploadUrl(peer, token), localPath, stat.size, transfer);
+    finishTransfer(transfer, 'completed', { transferredBytes: stat.size, targetPath: token.relativePath });
+  } catch (error) {
+    if (transfer.status !== 'cancelled') finishTransfer(transfer, 'failed', { error: error instanceof Error ? error.message : String(error) });
+    throw error;
+  }
+  return { transferId: transfer.id, name, size: stat.size, relativePath: token.relativePath, sha256: transfer.sha256 };
 }
 
 function uniqueFilePathInDirectory(directory: string, fileName: string) {
@@ -2335,12 +2720,75 @@ function streamSharedDownload(req: http.IncomingMessage, res: http.ServerRespons
   fs.createReadStream(item.target).pipe(res);
 }
 
+function streamSharedUpload(req: http.IncomingMessage, res: http.ServerResponse, token: string) {
+  pruneSharedUploadTokens();
+  const item = sharedUploadTokens.get(token);
+  if (!item || item.expiresAt <= Date.now()) {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Upload token expired or not found');
+    return;
+  }
+  const contentLength = Number(req.headers['content-length'] || 0);
+  if (!Number.isSafeInteger(contentLength) || contentLength !== item.size || contentLength > MAX_STREAM_FILE_BYTES) {
+    res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Invalid upload size');
+    return;
+  }
+  const filePath = uniqueFilePathInDirectory(item.targetDirectory, item.name);
+  const hash = crypto.createHash('sha256');
+  let received = 0;
+  const output = fs.createWriteStream(filePath);
+  req.on('data', (chunk: Buffer) => {
+    received += chunk.length;
+    hash.update(chunk);
+    if (received > item.size) {
+      req.destroy(new Error('Upload too large'));
+    }
+  });
+  req.on('error', () => {
+    output.destroy();
+    fs.rmSync(filePath, { force: true });
+  });
+  output.on('error', (error) => {
+    fs.rmSync(filePath, { force: true });
+    if (!res.headersSent) {
+      res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end(error.message);
+    }
+  });
+  output.on('finish', () => {
+    if (received !== item.size) {
+      fs.rmSync(filePath, { force: true });
+      res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Upload size mismatch');
+      return;
+    }
+    sharedUploadTokens.delete(token);
+    const digest = hash.digest('hex');
+    addAudit('file.uploadShared.stream', `${item.requesterId} 上传 ${path.basename(filePath)}`, item.requesterId, state.device.id);
+    sendJson(res, 200, {
+      ok: true,
+      data: {
+        name: path.basename(filePath),
+        relativePath: [item.currentPath, path.basename(filePath)].filter(Boolean).join('/'),
+        size: received,
+        sha256: digest
+      }
+    });
+  });
+  req.pipe(output);
+}
+
 function startWebServer() {
   return new Promise<void>((resolve, reject) => {
     function listen(port: number) {
       const server = http.createServer((req, res) => {
         const url = new URL(req.url || '/', `http://127.0.0.1:${port}`);
         if (req.method === 'GET' && url.pathname === '/api/presence') {
+          if (!allowPresenceRequest(req)) {
+            sendJson(res, 429, { ok: false, error: 'Too many presence requests' });
+            return;
+          }
           const packet = localAnnouncement();
           if (!packet) {
             sendJson(res, 404, { ok: false, error: 'Not joined to a home network' });
@@ -2352,6 +2800,11 @@ function startWebServer() {
         const tokenMatch = /^\/api\/files\/download\/([^/]+)\/?/.exec(url.pathname);
         if ((req.method === 'GET' || req.method === 'HEAD') && tokenMatch) {
           streamSharedDownload(req, res, decodeURIComponent(tokenMatch[1]));
+          return;
+        }
+        const uploadMatch = /^\/api\/files\/upload\/([^/]+)\/?/.exec(url.pathname);
+        if (req.method === 'PUT' && uploadMatch) {
+          streamSharedUpload(req, res, decodeURIComponent(uploadMatch[1]));
           return;
         }
         res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -2411,12 +2864,21 @@ async function handleLocalApi(pathname: string, method: string, body: any) {
   if (method === 'GET' && pathname === '/api/firewall/status') return getFirewallStatus();
   if (method === 'POST' && pathname === '/api/firewall/repair') return repairFirewallRules(body.elevated !== false);
   if (method === 'GET' && pathname === '/api/devices') return serializePeers();
+  if (method === 'GET' && pathname === '/api/peers/manual') return state.manualPeerAddresses;
+  if (method === 'POST' && pathname === '/api/peers/manual/add') return connectManualPeer(body.address);
+  if (method === 'POST' && pathname === '/api/peers/manual/remove') return removeManualPeer(body.address);
+  if (method === 'POST' && pathname === '/api/peers/manual/refresh') {
+    await refreshManualPeers();
+    return state.manualPeerAddresses;
+  }
   if (method === 'POST' && pathname === '/api/devices/preference') return updateDevicePreference(body.peerId, body.preference || body.patch || {});
   if (method === 'POST' && pathname === '/api/devices/trust') return trustDevice(body.peerId);
   if (method === 'POST' && pathname === '/api/devices/revoke') return revokeTrustedDevice(body.peerId);
   if (method === 'POST' && pathname === '/api/settings/file-sharing') return setFileSharing(body.enabled !== false);
   if (method === 'POST' && pathname === '/api/settings/auto-trust') return setAutoTrustDevices(body.enabled !== false);
   if (method === 'GET' && pathname === '/api/tasks') return state.tasks.slice(0, 200);
+  if (method === 'GET' && pathname === '/api/transfers') return state.transfers.slice(0, MAX_TRANSFER_RECORDS);
+  if (method === 'POST' && pathname === '/api/transfers/cancel') return cancelTransfer(body.transferId || body.id);
   if (method === 'POST' && pathname === '/api/run') {
     const peerIds = body.all ? [] : (Array.isArray(body.peerIds) ? body.peerIds : []);
     return runRemoteCommand(peerIds, body.command, body.cwd);
@@ -2510,6 +2972,9 @@ async function handleLocalApi(pathname: string, method: string, body: any) {
         base64: String(body.base64)
       }
     }, 60000);
+  }
+  if (method === 'POST' && pathname === '/api/files/put-stream') {
+    return uploadRemoteSharedFile(body.peerId, body.relativePath || '', String(body.localPath || ''));
   }
   throw new Error('Unknown Local API route');
 }
@@ -2699,6 +3164,14 @@ function createWindow() {
 function registerIpc() {
   ipcMain.handle('lch:get-state', () => appStateView());
   ipcMain.handle('lch:get-remote-sessions', () => serializeRemoteSessions());
+  ipcMain.handle('lch:get-transfers', () => state.transfers.slice(0, MAX_TRANSFER_RECORDS));
+  ipcMain.handle('lch:cancel-transfer', (_event, transferId) => cancelTransfer(transferId));
+  ipcMain.handle('lch:show-file', (_event, filePath) => {
+    const clean = String(filePath || '');
+    if (clean) shell.showItemInFolder(clean);
+    return true;
+  });
+  ipcMain.handle('lch:open-path', (_event, filePath) => shell.openPath(String(filePath || '')));
   ipcMain.handle('lch:get-firewall-status', () => getFirewallStatus());
   ipcMain.handle('lch:repair-firewall', (_event, elevated) => repairFirewallRules(elevated !== false));
   ipcMain.handle('lch:check-updates', () => checkForUpdates());
@@ -2719,6 +3192,11 @@ function registerIpc() {
   ipcMain.handle('lch:set-file-sharing', (_event, enabled) => setFileSharing(Boolean(enabled)));
   ipcMain.handle('lch:set-auto-trust', (_event, enabled) => setAutoTrustDevices(Boolean(enabled)));
   ipcMain.handle('lch:connect-manual-peer', (_event, address) => connectManualPeer(address));
+  ipcMain.handle('lch:remove-manual-peer', (_event, address) => removeManualPeer(address));
+  ipcMain.handle('lch:refresh-manual-peers', async () => {
+    await refreshManualPeers();
+    return appStateView();
+  });
   ipcMain.handle('lch:trust-device', (_event, peerId) => trustDevice(peerId));
   ipcMain.handle('lch:revoke-device', (_event, peerId) => revokeTrustedDevice(peerId));
   ipcMain.handle('lch:choose-shared-folder', async () => {
@@ -2786,6 +3264,9 @@ function registerIpc() {
         base64: String(file.base64)
       }
     }, 60000);
+  });
+  ipcMain.handle('lch:upload-shared-file-stream', async (_event, peerId, relativePath, localPath) => {
+    return uploadRemoteSharedFile(peerId, relativePath || '', localPath);
   });
   ipcMain.handle('lch:run-command', (_event, peerIds, command, cwd) => runRemoteCommand(peerIds || [], command, cwd));
   ipcMain.handle('lch:open-terminal', (_event, peerId) => openRemoteTerminal(peerId));

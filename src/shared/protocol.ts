@@ -1,5 +1,6 @@
 export const APP_NAME = 'Lan Control Hub';
-export const APP_VERSION = '0.4.1';
+export const APP_VERSION = '0.5.0';
+export const STATE_SCHEMA_VERSION = 2;
 
 export const DISCOVERY_PORT = 46880;
 export const DEFAULT_CONTROL_PORT = 46881;
@@ -16,6 +17,7 @@ export const MAX_LOCAL_API_BODY_BYTES = Math.ceil(MAX_FILE_BYTES * 4 / 3) + 1024
 export const MAX_CONTROL_MESSAGE_BYTES = Math.ceil(MAX_LOCAL_API_BODY_BYTES * 4 / 3) + 2 * 1024 * 1024;
 export const MAX_CONVERSATION_EVENTS = 1000;
 export const MAX_AUDIT_EVENTS = 2000;
+export const MAX_TRANSFER_RECORDS = 300;
 
 export const CAPABILITIES = [
   'chat',
@@ -52,9 +54,26 @@ export interface DevicePreference {
   room?: string;
   favorite?: boolean;
   readOnly?: boolean;
+  notificationsMuted?: boolean;
+  unreadCount?: number;
   lastControlledAt?: number;
   lastOpenedAt?: number;
   notes?: string;
+}
+
+export type ManualPeerStatus = 'unknown' | 'online' | 'offline' | 'home-mismatch' | 'invalid' | 'self';
+
+export interface ManualPeerAddress {
+  address: string;
+  host: string;
+  port: number;
+  label: string;
+  status: ManualPeerStatus;
+  lastCheckedAt?: number;
+  lastSeenAt?: number;
+  lastError?: string;
+  peerId?: string;
+  peerName?: string;
 }
 
 export interface DeviceIdentity {
@@ -99,6 +118,8 @@ export interface PeerInfo extends DeviceIdentity {
   room?: string;
   favorite?: boolean;
   readOnly?: boolean;
+  notificationsMuted?: boolean;
+  unreadCount?: number;
   lastControlledAt?: number;
   displayName?: string;
   latencyMs?: number;
@@ -199,7 +220,31 @@ export interface RemoteSessionRecord {
   error?: string;
 }
 
+export type TransferDirection = 'download' | 'upload';
+export type TransferStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+export interface TransferRecord {
+  id: string;
+  direction: TransferDirection;
+  peerId: string;
+  peerName: string;
+  name: string;
+  relativePath?: string;
+  targetPath?: string;
+  localPath?: string;
+  size: number;
+  transferredBytes: number;
+  status: TransferStatus;
+  startedAt: number;
+  updatedAt: number;
+  endedAt?: number;
+  speedBytesPerSecond?: number;
+  sha256?: string;
+  error?: string;
+}
+
 export interface AppStateView {
+  stateVersion: number;
   home: HomeInfo | null;
   device: DeviceIdentity & {
     controlPort: number;
@@ -216,7 +261,8 @@ export interface AppStateView {
   sharedFolder: string;
   fileShareEnabled: boolean;
   autoTrustDevices: boolean;
-  manualPeerAddresses: string[];
+  manualPeerAddresses: ManualPeerAddress[];
+  transfers: TransferRecord[];
   networkInfo: NetworkInfo;
 }
 

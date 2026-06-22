@@ -42,12 +42,12 @@ import {
   FileText
 } from 'lucide-react';
 import { APP_VERSION, MAX_FILE_BYTES } from '../shared/protocol';
-import type { AppStateView, DevicePreference, FirewallStatus, PeerInfo, RemoteInputEvent, RemoteOpenResult, RemoteSessionRecord, SharedFileToken, SharedFolderListing, TaskRecord, TerminalOutputEvent } from '../shared/protocol';
+import type { AppStateView, DevicePreference, FirewallStatus, PeerInfo, RemoteInputEvent, RemoteOpenResult, RemoteSessionRecord, SharedFileToken, SharedFolderListing, TaskRecord, TerminalOutputEvent, TransferRecord } from '../shared/protocol';
 import './styles.css';
 
 const api = window.lanControlHub;
 
-type View = 'dashboard' | 'chat' | 'files' | 'tasks' | 'settings';
+type View = 'dashboard' | 'chat' | 'files' | 'transfers' | 'tasks' | 'settings';
 type TerminalTab = {
   peerId: string;
   peerName: string;
@@ -286,7 +286,7 @@ function DeviceSidebar({
               >
                 <span className={`onlineDot ${peer.isOnline ? 'on' : ''}`} />
                 <span className="peerText">
-                  <strong>{peerLabel(peer)}</strong>
+                  <strong>{peerLabel(peer)}{peer.unreadCount ? <em className="unreadBadge">{peer.unreadCount}</em> : null}</strong>
                   <small>{peer.name} · {peer.address}</small>
                 </span>
                 <span
@@ -455,6 +455,9 @@ function Dashboard({
                   <button className={selectedPeer.readOnly ? 'toggleButton warn' : 'toggleButton'} onClick={() => onUpdatePreference(selectedPeer.id, { readOnly: !selectedPeer.readOnly })}>
                     {selectedPeer.readOnly ? <ShieldAlert size={15} /> : <ShieldCheck size={15} />} {selectedPeer.readOnly ? '只读模式' : '可控制'}
                   </button>
+                  <button className={selectedPeer.notificationsMuted ? 'toggleButton warn' : 'toggleButton'} onClick={() => onUpdatePreference(selectedPeer.id, { notificationsMuted: !selectedPeer.notificationsMuted })}>
+                    {selectedPeer.notificationsMuted ? <EyeOff size={15} /> : <Eye size={15} />} {selectedPeer.notificationsMuted ? '消息静音' : '消息提醒'}
+                  </button>
                 </div>
                 <div className="miniStats">
                   <span>最近控制：{formatRelativeTime(selectedPeer.lastControlledAt)}</span>
@@ -597,10 +600,29 @@ function FilesView({
   const [downloadBusy, setDownloadBusy] = useState(false);
   const [downloadResult, setDownloadResult] = useState('');
   const [dragging, setDragging] = useState(false);
+  const [pathInput, setPathInput] = useState('');
+  const [typeFilter, setTypeFilter] = useState('all');
+  const [sortMode, setSortMode] = useState('name');
+  const [showHidden, setShowHidden] = useState(false);
   const uploadRef = useRef<HTMLInputElement>(null);
   const canBrowse = Boolean(peer?.isOnline && peer.trusted);
-  const canUpload = Boolean(canBrowse && listing?.writable && remotePath && !peer?.readOnly);
+  const canUpload = Boolean(canBrowse && listing?.writable && !peer?.readOnly);
   const selectedKind = previewKind(selectedEntry, preview?.mime || '');
+  const visibleEntries = useMemo(() => {
+    const entries = [...(listing?.entries || [])].filter((entry) => {
+      if (!showHidden && entry.name.startsWith('.')) return false;
+      if (typeFilter === 'all') return true;
+      if (typeFilter === 'folder') return entry.type === 'directory';
+      if (entry.type !== 'file') return false;
+      return previewKind(entry) === typeFilter;
+    });
+    return entries.sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
+      if (sortMode === 'size') return b.size - a.size || a.name.localeCompare(b.name);
+      if (sortMode === 'modified') return b.modifiedAt - a.modifiedAt || a.name.localeCompare(b.name);
+      return a.name.localeCompare(b.name);
+    });
+  }, [listing?.entries, showHidden, typeFilter, sortMode]);
 
   async function load(pathValue = '') {
     if (!canBrowse) return;
@@ -609,6 +631,7 @@ function FilesView({
       const next = await onListRemote(pathValue);
       setListing(next);
       setRemotePath(next.currentPath || '');
+      setPathInput(next.currentPath || '');
       setSelectedEntry(null);
       setPreview(null);
       setDownloadResult('');
@@ -740,10 +763,34 @@ function FilesView({
               />
             </div>
           </div>
+          <div className="fileToolbar">
+            <form onSubmit={(event) => {
+              event.preventDefault();
+              load(pathInput);
+            }}>
+              <input value={pathInput} onChange={(event) => setPathInput(event.target.value)} placeholder="输入远端文件库路径，例如 Downloads" />
+              <button className="secondary" disabled={!canBrowse || busy}>跳转</button>
+            </form>
+            <select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}>
+              <option value="all">全部类型</option>
+              <option value="folder">文件夹</option>
+              <option value="image">图片</option>
+              <option value="video">视频</option>
+              <option value="audio">音频</option>
+              <option value="pdf">PDF</option>
+              <option value="download">其他文件</option>
+            </select>
+            <select value={sortMode} onChange={(event) => setSortMode(event.target.value)}>
+              <option value="name">按名称</option>
+              <option value="modified">按修改时间</option>
+              <option value="size">按大小</option>
+            </select>
+            <label className="toggleLine"><input type="checkbox" checked={showHidden} onChange={(event) => setShowHidden(event.target.checked)} /> 显示隐藏项</label>
+          </div>
           {!peer ? <div className="empty">先选择一台设备。</div> : !peer.trusted ? <div className="empty">这台设备还没有被信任。</div> : !peer.isOnline ? <div className="empty">设备离线。</div> : busy ? <div className="empty">正在处理文件...</div> : (
             <div className="remoteFileWorkspace">
               <div>
-                {listing?.entries.length ? (
+                {visibleEntries.length ? (
                   <div className="fileList">
                     <div className="fileListHead">
                       <span>名称</span>
@@ -751,7 +798,7 @@ function FilesView({
                       <span>修改时间</span>
                       <span>操作</span>
                     </div>
-                    {listing.entries.map((entry) => (
+                    {visibleEntries.map((entry) => (
                       <div className={`fileRow ${selectedEntry?.relativePath === entry.relativePath ? 'selected' : ''}`} key={entry.relativePath}>
                         <button className="fileRowMain" onDoubleClick={() => entry.type === 'directory' && load(entry.relativePath)} onClick={() => entry.type === 'directory' ? load(entry.relativePath) : selectEntry(entry)}>
                           <span className="fileTypeIcon">{fileIcon(entry)}</span>
@@ -767,7 +814,7 @@ function FilesView({
                       </div>
                     ))}
                   </div>
-                ) : <div className="empty">{remotePath ? '没有可显示的文件。' : '远端没有可用文件库。'}</div>}
+                ) : <div className="empty">{remotePath ? '没有符合筛选条件的文件。' : '远端没有可用文件库。'}</div>}
               </div>
               <aside className="previewPane">
                 <div className="previewHeader">
@@ -809,6 +856,28 @@ function FilesView({
 
 function TasksView({ tasks }: { tasks: TaskRecord[] }) {
   const [expanded, setExpanded] = useState<string | null>(tasks[0]?.id || null);
+  const [query, setQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [peerFilter, setPeerFilter] = useState('all');
+  const peerNames = Array.from(new Set(tasks.map((task) => task.peerName))).sort();
+  const filteredTasks = tasks.filter((task) => {
+    const text = `${task.peerName} ${task.command} ${task.output} ${task.errorOutput}`.toLowerCase();
+    return (!query.trim() || text.includes(query.trim().toLowerCase()))
+      && (statusFilter === 'all' || task.status === statusFilter)
+      && (peerFilter === 'all' || task.peerName === peerFilter);
+  });
+  function taskText(task: TaskRecord) {
+    return [
+      `[${task.status}] ${task.peerName}`,
+      task.command,
+      '',
+      'stdout:',
+      task.output || '',
+      '',
+      'stderr:',
+      task.errorOutput || ''
+    ].join('\n');
+  }
   return (
     <section className="workspace">
       <header className="workspaceHeader">
@@ -817,8 +886,22 @@ function TasksView({ tasks }: { tasks: TaskRecord[] }) {
           <p>远程命令按设备保存，stdout 和 stderr 分开显示。</p>
         </div>
       </header>
+      <div className="taskToolbar">
+        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索命令、设备或输出" />
+        <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+          <option value="all">全部状态</option>
+          <option value="running">运行中</option>
+          <option value="completed">成功</option>
+          <option value="failed">失败</option>
+          <option value="cancelled">已取消</option>
+        </select>
+        <select value={peerFilter} onChange={(event) => setPeerFilter(event.target.value)}>
+          <option value="all">全部设备</option>
+          {peerNames.map((name) => <option key={name} value={name}>{name}</option>)}
+        </select>
+      </div>
       <div className="taskList">
-        {tasks.length ? tasks.map((task) => (
+        {filteredTasks.length ? filteredTasks.map((task) => (
           <article className={`taskItem ${expanded === task.id ? 'expanded' : ''}`} key={task.id}>
             <button className="taskSummary" onClick={() => setExpanded(expanded === task.id ? null : task.id)}>
               <span className={`statusPill ${task.status}`}>{task.status}</span>
@@ -829,6 +912,19 @@ function TasksView({ tasks }: { tasks: TaskRecord[] }) {
             </button>
             <code>{task.command}</code>
             {expanded === task.id ? (
+              <>
+              <div className="taskActions">
+                <button className="secondary" onClick={() => navigator.clipboard.writeText(taskText(task))}><Copy size={14} /> 复制输出</button>
+                <button className="secondary" onClick={() => {
+                  const blob = new Blob([taskText(task)], { type: 'text/plain;charset=utf-8' });
+                  const url = URL.createObjectURL(blob);
+                  const link = document.createElement('a');
+                  link.href = url;
+                  link.download = `lch-task-${task.id}.log`;
+                  link.click();
+                  URL.revokeObjectURL(url);
+                }}><Download size={14} /> 导出</button>
+              </div>
               <div className="taskOutputGrid">
                 <section>
                   <h3>stdout</h3>
@@ -839,11 +935,82 @@ function TasksView({ tasks }: { tasks: TaskRecord[] }) {
                   <pre>{task.errorOutput || '无错误输出'}</pre>
                 </section>
               </div>
+              </>
             ) : (
               <div className="taskPreview">{(task.output || task.errorOutput || '等待输出...').slice(0, 240)}</div>
             )}
           </article>
-        )) : <div className="empty">暂无任务。</div>}
+        )) : <div className="empty">没有符合条件的任务。</div>}
+      </div>
+    </section>
+  );
+}
+
+function TransfersView({
+  transfers,
+  onCancel,
+  onShowFile,
+  onOpenPath
+}: {
+  transfers: TransferRecord[];
+  onCancel: (transferId: string) => void;
+  onShowFile: (filePath: string) => void;
+  onOpenPath: (filePath: string) => void;
+}) {
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [query, setQuery] = useState('');
+  const filtered = transfers.filter((transfer) => {
+    const text = `${transfer.name} ${transfer.peerName} ${transfer.relativePath || ''} ${transfer.localPath || ''} ${transfer.error || ''}`.toLowerCase();
+    return (statusFilter === 'all' || transfer.status === statusFilter)
+      && (!query.trim() || text.includes(query.trim().toLowerCase()));
+  });
+  return (
+    <section className="workspace">
+      <header className="workspaceHeader">
+        <div>
+          <h1>传输</h1>
+          <p>文件库的大文件上传和下载记录，包含进度、速度、校验和失败原因。</p>
+        </div>
+      </header>
+      <div className="taskToolbar">
+        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文件、设备、路径或错误" />
+        <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+          <option value="all">全部状态</option>
+          <option value="running">运行中</option>
+          <option value="queued">排队中</option>
+          <option value="completed">已完成</option>
+          <option value="failed">失败</option>
+          <option value="cancelled">已取消</option>
+        </select>
+      </div>
+      <div className="transferList">
+        {filtered.length ? filtered.map((transfer) => {
+          const percent = transfer.size ? Math.min(100, Math.round((transfer.transferredBytes / transfer.size) * 100)) : 0;
+          const running = transfer.status === 'running' || transfer.status === 'queued';
+          return (
+            <article className="transferItem" key={transfer.id}>
+              <div className="transferHead">
+                <span className={`statusPill ${transfer.status}`}>{transfer.status}</span>
+                <strong title={transfer.name}>{transfer.name}</strong>
+                <span>{transfer.direction === 'upload' ? '上传到' : '下载自'} {transfer.peerName}</span>
+              </div>
+              <div className="transferProgress"><span style={{ width: `${percent}%` }} /></div>
+              <div className="transferMeta">
+                <span>{formatBytes(transfer.transferredBytes)} / {formatBytes(transfer.size)}</span>
+                <span>{transfer.speedBytesPerSecond ? `${formatBytes(transfer.speedBytesPerSecond)}/s` : ''}</span>
+                <span>{formatDuration(transfer.startedAt, transfer.endedAt)}</span>
+                <span>{formatTime(transfer.updatedAt)}</span>
+              </div>
+              {transfer.sha256 ? <code className="transferHash">SHA256 {transfer.sha256}</code> : null}
+              {transfer.error ? <p className="transferError">{transfer.error}</p> : null}
+              <div className="taskActions">
+                {running ? <button className="secondary" onClick={() => onCancel(transfer.id)}>取消</button> : null}
+                {transfer.localPath ? <button className="secondary" onClick={() => onShowFile(transfer.localPath!)}>打开所在文件夹</button> : null}
+                {transfer.localPath && transfer.status === 'completed' ? <button className="secondary" onClick={() => onOpenPath(transfer.localPath!)}>打开文件</button> : null}
+              </div>
+            </article>
+          );
+        }) : <div className="empty">没有符合条件的传输记录。</div>}
       </div>
     </section>
   );
@@ -874,6 +1041,8 @@ function SettingsView({
   onUpdateName,
   onSetAutoTrust,
   onConnectManualPeer,
+  onRemoveManualPeer,
+  onRefreshManualPeers,
   onTrustDevice,
   onRevokeDevice
 }: {
@@ -881,10 +1050,13 @@ function SettingsView({
   onUpdateName: (name: string) => void;
   onSetAutoTrust: (enabled: boolean) => void;
   onConnectManualPeer: (address: string) => Promise<unknown> | void;
+  onRemoveManualPeer: (address: string) => Promise<unknown> | void;
+  onRefreshManualPeers: () => Promise<unknown> | void;
   onTrustDevice: (peerId: string) => void;
   onRevokeDevice: (peerId: string) => void;
 }) {
   const [name, setName] = useState(state.device.name);
+  const [settingsTab, setSettingsTab] = useState<'network' | 'trust' | 'files' | 'system'>('network');
   const [manualAddress, setManualAddress] = useState('');
   const [manualBusy, setManualBusy] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -935,7 +1107,18 @@ function SettingsView({
           <p>{state.device.name} 已加入“{state.home?.name}”。加入密钥只在添加新电脑时使用。</p>
         </div>
       </header>
+      <div className="settingsTabs">
+        {[
+          ['network', '网络'],
+          ['trust', '信任'],
+          ['files', '文件共享'],
+          ['system', '系统']
+        ].map(([id, label]) => (
+          <button key={id} className={settingsTab === id ? 'active' : ''} onClick={() => setSettingsTab(id as typeof settingsTab)}>{label}</button>
+        ))}
+      </div>
       <div className="settingsGrid">
+        {settingsTab === 'network' ? <>
         <section className="panel settingsIdentity">
           <h2>本机设备名</h2>
           <div className="inlineEdit">
@@ -964,6 +1147,34 @@ function SettingsView({
             }}><Clipboard size={16} /> {copied ? '已复制' : '复制加入密钥'}</button>
           </div>
         </section>
+        <section className="panel settingsExternal">
+          <div className="panelHeader">
+            <div>
+              <h2>外网 / Tailscale 连接</h2>
+              <p>先让两台电脑加入同一个 Tailscale、ZeroTier 或 WireGuard 网络，并使用同一个加入密钥。这里填对方虚拟 IP，例如 100.x.x.x。</p>
+            </div>
+            <button className="secondary" onClick={() => onRefreshManualPeers()}><RefreshCw size={16} /> 刷新</button>
+          </div>
+          <div className="inlineEdit">
+            <input value={manualAddress} onChange={(event) => setManualAddress(event.target.value)} placeholder="100.x.x.x 或 100.x.x.x:46882" />
+            <button className="primary" disabled={manualBusy || !manualAddress.trim()} onClick={connectManualAddress}>{manualBusy ? '连接中' : '连接'}</button>
+          </div>
+          {state.manualPeerAddresses?.length ? (
+            <div className="manualPeerRows">
+              {state.manualPeerAddresses.map((item) => (
+                <div className="manualPeerRow" key={item.address}>
+                  <div>
+                    <strong>{item.peerName || item.address}</strong>
+                    <span>{item.address} · {item.status}{item.lastError ? ` · ${item.lastError}` : ''}</span>
+                  </div>
+                  <button className="secondary" onClick={() => onRemoveManualPeer(item.address)}><Trash2 size={15} /> 删除</button>
+                </div>
+              ))}
+            </div>
+          ) : <p>还没有手动添加的远程地址。</p>}
+        </section>
+        </> : null}
+        {settingsTab === 'trust' ? <>
         <section className="panel settingsTrust">
           <div className="panelHeader">
             <div>
@@ -1005,6 +1216,8 @@ function SettingsView({
             ))}
           </div>
         </section>
+        </> : null}
+        {settingsTab === 'system' ? <>
         <section className="panel settingsUpdate">
           <div className="panelHeader">
             <div>
@@ -1025,19 +1238,6 @@ function SettingsView({
             <button className="secondary" disabled={updateBusy} onClick={checkUpdates}><RefreshCw size={16} /> {updateBusy ? '检查中' : '检查更新'}</button>
             <button className="primary" onClick={() => api.openLatestRelease()}><Download size={16} /> 打开下载页</button>
           </div>
-        </section>
-        <section className="panel settingsExternal">
-          <h2>外网 / Tailscale 连接</h2>
-          <p>先让两台电脑加入同一个 Tailscale、ZeroTier 或 WireGuard 网络，并使用同一个加入密钥。这里填对方虚拟 IP，例如 100.x.x.x；如果对方 Web 端口不是默认值，也可以填 100.x.x.x:46882。</p>
-          <div className="inlineEdit">
-            <input value={manualAddress} onChange={(event) => setManualAddress(event.target.value)} placeholder="100.x.x.x 或 100.x.x.x:46882" />
-            <button className="primary" disabled={manualBusy || !manualAddress.trim()} onClick={connectManualAddress}>{manualBusy ? '连接中' : '连接'}</button>
-          </div>
-          {state.manualPeerAddresses?.length ? (
-            <div className="manualPeerList">
-              {state.manualPeerAddresses.map((address) => <span key={address}>{address}</span>)}
-            </div>
-          ) : <p>还没有手动添加的远程地址。</p>}
         </section>
         <section className="panel settingsApi">
           <h2>Local API</h2>
@@ -1062,6 +1262,14 @@ function SettingsView({
             </button>
           </div>
         </section>
+        </> : null}
+        {settingsTab === 'files' ? (
+          <section className="panel settingsFiles">
+            <h2>文件共享</h2>
+            <p>文件共享开关和自选目录在“文件中枢”的本机文件库面板中管理。当前状态：{state.fileShareEnabled ? '已开启' : '已关闭'}。</p>
+            <p>{state.sharedFolder ? `自选目录：${state.sharedFolder}` : '未设置自选目录。'}</p>
+          </section>
+        ) : null}
       </div>
     </section>
   );
@@ -1551,6 +1759,12 @@ function App() {
   const selectedPeer = useMemo(() => state?.peers.find((peer) => peer.id === selectedPeerId) || state?.peers[0] || null, [state?.peers, selectedPeerId]);
   const messages = selectedPeer ? state?.conversations[selectedPeer.id] || [] : [];
 
+  useEffect(() => {
+    if (view === 'chat' && selectedPeer?.unreadCount) {
+      updatePreference(selectedPeer.id, { unreadCount: 0 });
+    }
+  }, [view, selectedPeer?.id, selectedPeer?.unreadCount]);
+
   async function run(action: () => Promise<unknown>) {
     setError('');
     try {
@@ -1723,6 +1937,7 @@ function App() {
         <button className={view === 'dashboard' ? 'active' : ''} title="控制台" onClick={() => setView('dashboard')}><MonitorPlay size={21} /></button>
         <button className={view === 'chat' ? 'active' : ''} title="聊天" onClick={() => setView('chat')}><MessageSquare size={21} /></button>
         <button className={view === 'files' ? 'active' : ''} title="文件" onClick={() => setView('files')}><FileDown size={21} /></button>
+        <button className={view === 'transfers' ? 'active' : ''} title="传输" onClick={() => setView('transfers')}><Upload size={21} /></button>
         <button className={view === 'tasks' ? 'active' : ''} title="任务" onClick={() => setView('tasks')}><TerminalSquare size={21} /></button>
         <button className={view === 'settings' ? 'active' : ''} title="设置" onClick={() => setView('settings')}><Settings size={21} /></button>
       </nav>
@@ -1775,9 +1990,18 @@ function App() {
           onPreview={(relativePath) => api.previewSharedFile(selectedPeer!.id, relativePath)}
           onDownload={(relativePath) => run(() => api.downloadSharedFile(selectedPeer!.id, relativePath)) as Promise<{ filePath: string; name: string; size: number } | void>}
           onUpload={(relativePath, file) => run(async () => {
-            const base64 = await readFileAsBase64(file);
-            await api.uploadSharedFile(selectedPeer!.id, relativePath, { name: file.name, size: file.size, base64 });
+            const localPath = api.getFilePath(file);
+            if (!localPath) throw new Error('无法读取本机文件路径，请使用桌面版文件选择器重新选择文件');
+            await api.uploadSharedFileStream(selectedPeer!.id, relativePath, localPath);
           }) as Promise<void>}
+        />
+      ) : null}
+      {view === 'transfers' ? (
+        <TransfersView
+          transfers={state.transfers || []}
+          onCancel={(transferId) => run(() => api.cancelTransfer(transferId))}
+          onShowFile={(filePath) => run(() => api.showFile(filePath))}
+          onOpenPath={(filePath) => run(() => api.openPath(filePath))}
         />
       ) : null}
       {view === 'tasks' ? <TasksView tasks={state.tasks} /> : null}
@@ -1787,6 +2011,8 @@ function App() {
           onUpdateName={(name) => run(() => api.updateName(name))}
           onSetAutoTrust={(enabled) => run(() => api.setAutoTrust(enabled))}
           onConnectManualPeer={(address) => run(() => api.connectManualPeer(address))}
+          onRemoveManualPeer={(address) => run(() => api.removeManualPeer(address))}
+          onRefreshManualPeers={() => run(() => api.refreshManualPeers())}
           onTrustDevice={(peerId) => run(() => api.trustDevice(peerId))}
           onRevokeDevice={(peerId) => run(() => api.revokeDevice(peerId))}
         />

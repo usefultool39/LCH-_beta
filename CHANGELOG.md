@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.5.0
+
+- Add state schema versioning and migration for manual peer and transfer history data.
+- Add stream-based shared-folder uploads up to 20 GB, matching the existing large download path.
+- Track transfer history with progress, SHA256, cancel support, and Local API/CLI visibility.
+- Improve manual Tailscale/remote peer management with list, refresh, remove, status, and error metadata.
+- Add unread chat counts, per-device notification mute, file list sorting/filtering/path jump, task log filtering/export, and settings tabs.
+- Add peer and transfer CLI commands plus stream upload through `lch file put`.
+
 ## v0.4.1
 
 - Add system notifications and taskbar flashing for incoming chat messages and pushed files when the main window is not focused.

@@ -131,7 +131,13 @@ function usage() {
     '  lch clipboard --device <name|ip|alias|id-prefix> write "text"',
     '  lch file list --device <name|ip|alias|id-prefix> [remotePath]',
     '  lch file get --device <name|ip|alias|id-prefix> <remotePath> [--out localPath]',
+    '  lch file put --device <name|ip|alias|id-prefix> <localPath> [remoteDirectory]',
     '  lch file send --device <name|ip|alias|id-prefix> <localPath>',
+    '  lch transfer list [--json]',
+    '  lch transfer cancel <transferId>',
+    '  lch peer add <tailscale-ip[:port]>',
+    '  lch peer list [--json]',
+    '  lch peer remove <tailscale-ip[:port]>',
     '  lch chat send --device <name|ip|alias|id-prefix> "message"',
     '  lch device set --device <name|ip|id-prefix> [--alias name] [--room room] [--favorite true|false] [--read-only true|false]',
     '  lch firewall status [--json]',
@@ -543,8 +549,8 @@ async function windowsCommand(args) {
 
 async function fileCommand(args) {
   const action = args.shift();
-  if (!['list', 'get', 'send'].includes(action)) {
-    throw new Error('Usage: lch file list|get|send --device <id> ...');
+  if (!['list', 'get', 'put', 'send'].includes(action)) {
+    throw new Error('Usage: lch file list|get|put|send --device <id> ...');
   }
   const peerId = await deviceFromArgs(args);
   if (action === 'list') {
@@ -575,6 +581,20 @@ async function fileCommand(args) {
     jsonOutput ? printJson({ peerId, filePath, name: downloaded.name, size: downloaded.size }) : console.log(filePath);
     return;
   }
+  if (action === 'put') {
+    const localPath = args.shift();
+    if (!localPath || !fs.existsSync(localPath)) throw new Error('Missing existing local file path');
+    const relativePath = args.join(' ');
+    const stat = fs.statSync(localPath);
+    if (!stat.isFile()) throw new Error('Local path is not a file');
+    const result = await request('POST', '/api/files/put-stream', {
+      peerId,
+      relativePath,
+      localPath: path.resolve(localPath)
+    });
+    jsonOutput ? printJson({ peerId, ...result }) : console.log(result.relativePath || result.transferId);
+    return;
+  }
   const localPath = args.shift();
   if (!localPath || !fs.existsSync(localPath)) throw new Error('Missing existing local file path');
   const stat = fs.statSync(localPath);
@@ -587,6 +607,67 @@ async function fileCommand(args) {
     base64: fs.readFileSync(localPath).toString('base64')
   });
   if (jsonOutput) printJson({ peerId, sent: localPath, size: stat.size });
+}
+
+async function transferCommand(args) {
+  const action = args.shift() || 'list';
+  if (action === 'list') {
+    const transfers = await request('GET', '/api/transfers');
+    if (jsonOutput) {
+      printJson(transfers);
+    } else {
+      printTable(transfers.map((item) => ({
+        id: item.id,
+        direction: item.direction,
+        peer: item.peerName,
+        status: item.status,
+        progress: item.size ? `${item.transferredBytes || 0}/${item.size}` : '',
+        name: item.name
+      })));
+    }
+    return;
+  }
+  if (action === 'cancel') {
+    const transferId = args.shift();
+    if (!transferId) throw new Error('Missing transfer id');
+    const result = await request('POST', '/api/transfers/cancel', { transferId });
+    jsonOutput ? printJson(result) : console.log(`Cancelled ${result.id}`);
+    return;
+  }
+  throw new Error('Usage: lch transfer list|cancel <transferId>');
+}
+
+async function peerCommand(args) {
+  const action = args.shift() || 'list';
+  if (action === 'list') {
+    const peers = await request('GET', '/api/peers/manual');
+    if (jsonOutput) {
+      printJson(peers);
+    } else {
+      printTable(peers.map((item) => ({
+        address: item.address,
+        status: item.status,
+        peer: item.peerName || '',
+        error: item.lastError || ''
+      })));
+    }
+    return;
+  }
+  if (action === 'add') {
+    const address = args.shift();
+    if (!address) throw new Error('Missing peer address');
+    const state = await request('POST', '/api/peers/manual/add', { address });
+    jsonOutput ? printJson(state.manualPeerAddresses) : console.log(`Added ${address}`);
+    return;
+  }
+  if (action === 'remove') {
+    const address = args.shift();
+    if (!address) throw new Error('Missing peer address');
+    const state = await request('POST', '/api/peers/manual/remove', { address });
+    jsonOutput ? printJson(state.manualPeerAddresses) : console.log(`Removed ${address}`);
+    return;
+  }
+  throw new Error('Usage: lch peer add|list|remove');
 }
 
 async function chatCommand(args) {
@@ -668,6 +749,8 @@ async function main() {
   if (cmd === 'observe') return observe(args);
   if (cmd === 'windows') return windowsCommand(args);
   if (cmd === 'file') return fileCommand(args);
+  if (cmd === 'transfer') return transferCommand(args);
+  if (cmd === 'peer') return peerCommand(args);
   if (cmd === 'chat') return chatCommand(args);
   if (cmd === 'device') return deviceCommand(args);
   if (cmd === 'firewall') {
