@@ -47,11 +47,21 @@ import {
   FileText
 } from 'lucide-react';
 import { APP_VERSION, CHAT_REACTION_EMOJIS, DEFAULT_WEBRTC_CONFIG, MAX_FILE_BYTES } from '../shared/protocol';
-import type { AppStateView, ConversationRecord, DevicePreference, FirewallStatus, PeerInfo, RemoteInputEvent, RemoteOpenResult, RemoteSessionRecord, SharedFileToken, SharedFolderListing, TaskRecord, TerminalOutputEvent, TransferRecord, WebRtcConfig, WebRtcIceTransportPolicy } from '../shared/protocol';
+import type { AppStateView, ConversationRecord, DevicePreference, FirewallStatus, LanRoomInfo, PeerInfo, RemoteInputEvent, RemoteOpenResult, RemoteSessionRecord, SharedFileToken, SharedFolderListing, TaskRecord, TerminalOutputEvent, TransferRecord, WebRtcConfig, WebRtcIceTransportPolicy } from '../shared/protocol';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
 
 const api = window.lanControlHub;
+
+function deviceCode(id = '') {
+  const clean = id.replace(/[^a-z0-9]/gi, '').slice(0, 4).toUpperCase();
+  return `PC-${clean || '----'}`;
+}
+
+function roomCode(id = '') {
+  const clean = id.replace(/[^a-z0-9]/gi, '').slice(0, 6).toUpperCase();
+  return `ROOM-${clean || '------'}`;
+}
 
 type View = 'dashboard' | 'chat' | 'files' | 'transfers' | 'tasks' | 'settings';
 type TerminalTab = {
@@ -321,31 +331,84 @@ function readFileAsBase64(file: File) {
   });
 }
 
-function SetupScreen({ onCreate, onJoin }: { onCreate: (name: string) => void; onJoin: (secret: string, name: string) => void }) {
-  const [name, setName] = useState('我的家庭网络');
+function SetupScreen({
+  rooms,
+  onCreate,
+  onJoin,
+  onScanRooms
+}: {
+  rooms: LanRoomInfo[];
+  onCreate: (name: string) => void;
+  onJoin: (secret: string, name: string, expectedHomeId?: string) => void;
+  onScanRooms: () => Promise<unknown> | void;
+}) {
+  const [name, setName] = useState('我的局域网房间');
   const [secret, setSecret] = useState('');
+  const [selectedRoomId, setSelectedRoomId] = useState('');
+  const [scanning, setScanning] = useState(false);
+  const selectedRoom = rooms.find((room) => room.homeId === selectedRoomId) || null;
+  useEffect(() => {
+    if (!selectedRoomId && rooms.length) setSelectedRoomId(rooms[0].homeId);
+  }, [rooms, selectedRoomId]);
+  useEffect(() => {
+    setScanning(true);
+    Promise.resolve(onScanRooms()).finally(() => setScanning(false));
+  }, []);
+  async function scanRooms() {
+    setScanning(true);
+    try {
+      await onScanRooms();
+    } finally {
+      setScanning(false);
+    }
+  }
+  function joinSelectedRoom() {
+    onJoin(secret, selectedRoom?.homeName || selectedRoom?.displayName || name, selectedRoom?.homeId);
+  }
   return (
     <main className="setup">
       <section className="setupHero">
         <div className="setupBrand"><Home size={34} /> Lan Control Hub</div>
-        <h1>把家里的 Windows 和 Mac 连成一个控制网络</h1>
-        <p>第一台电脑创建网络，其他电脑粘贴加入密钥。加入后需要在两台电脑上确认信任，之后即可聊天、传文件、执行命令、打开终端和远程控制。</p>
+        <h1>像加入局域网房间一样连接你的电脑</h1>
+        <p>先扫描附近已经创建的房间，选中房间后输入房间密码加入。如果附近没有房间，这台电脑就创建一个新房间，其他电脑再用密码加入。</p>
       </section>
       <section className="setupPanel">
+        <div className="setupPanelHeader">
+          <div>
+            <h2>局域网房间</h2>
+            <p>同一房间内的设备会互相发现，加入后仍需要信任才能控制。</p>
+          </div>
+          <button className="secondary" disabled={scanning} onClick={scanRooms}><RefreshCw size={16} /> {scanning ? '扫描中' : '扫描'}</button>
+        </div>
+        <div className="roomScanList">
+          {rooms.length ? rooms.map((room) => (
+            <button
+              className={`roomScanRow ${selectedRoomId === room.homeId ? 'active' : ''}`}
+              key={room.homeId}
+              type="button"
+              onClick={() => setSelectedRoomId(room.homeId)}
+            >
+              <span className="roomScanTitle">{room.displayName}</span>
+              <span>{roomCode(room.homeId)} · {room.deviceCount} 台设备 · {room.hostAddress}:{room.webPort}</span>
+            </button>
+          )) : (
+            <div className="empty small">还没有扫到附近房间。确认已有电脑打开了 Lan Control Hub，或直接创建新房间。</div>
+          )}
+        </div>
         <div className="field">
-          <label>这个网络叫什么</label>
+          <label>{selectedRoom ? `加入 ${selectedRoom.displayName} 的房间密码` : '房间密码 / 加入密钥'}</label>
+          <textarea value={secret} onChange={(event) => setSecret(event.target.value)} placeholder="从房主电脑复制房间密码，粘贴到这里" />
+        </div>
+        <button className="primary wide" disabled={!secret.trim()} onClick={joinSelectedRoom}>
+          <KeyRound size={16} /> 加入选中的局域网房间
+        </button>
+        <div className="divider">或者</div>
+        <div className="field">
+          <label>创建一个新房间</label>
           <input value={name} onChange={(event) => setName(event.target.value)} />
         </div>
         <button className="primary wide" onClick={() => onCreate(name)}>
-          <KeyRound size={16} /> 我是第一台，创建网络
-        </button>
-        <div className="divider">或</div>
-        <div className="field">
-          <label>我已有加入密钥</label>
-          <textarea value={secret} onChange={(event) => setSecret(event.target.value)} placeholder="从已经加入的电脑复制“加入密钥”，粘贴到这里" />
-        </div>
-        <button className="secondary wide" disabled={!secret.trim()} onClick={() => onJoin(secret, name)}>
-          加入这个家庭网络
+          <Home size={16} /> 创建新房间
         </button>
       </section>
     </main>
@@ -384,8 +447,8 @@ function DeviceSidebar({
       <div className="localDevice">
         <div className="avatar"><Laptop size={22} /></div>
         <div>
-          <strong>{state.device.name}</strong>
-          <span>{state.device.platform} · {state.networkInfo.controlPort}</span>
+          <strong>{deviceCode(state.device.id)}</strong>
+          <span>{state.home?.name || '未加入房间'} · {state.device.name}</span>
         </div>
       </div>
       <div className="sideHeader">
@@ -409,8 +472,8 @@ function DeviceSidebar({
               >
                 <span className={`onlineDot ${peer.isOnline ? 'on' : ''}`} />
                 <span className="peerText">
-                  <strong>{peerLabel(peer)}{peer.unreadCount ? <em className="unreadBadge">{peer.unreadCount}</em> : null}</strong>
-                  <small>{peer.name} · {peer.address}</small>
+                  <strong>{peer.alias || deviceCode(peer.id)}{peer.unreadCount ? <em className="unreadBadge">{peer.unreadCount}</em> : null}</strong>
+                  <small>{deviceCode(peer.id)} · {peer.name} · {peer.address}</small>
                 </span>
                 <span
                   className="checkHit starHit"
@@ -1381,7 +1444,8 @@ function SettingsView({
   onRemoveManualPeer,
   onRefreshManualPeers,
   onTrustDevice,
-  onRevokeDevice
+  onRevokeDevice,
+  onLeaveHome
 }: {
   state: AppStateView;
   onUpdateName: (name: string) => void;
@@ -1392,6 +1456,7 @@ function SettingsView({
   onRefreshManualPeers: () => Promise<unknown> | void;
   onTrustDevice: (peerId: string) => void;
   onRevokeDevice: (peerId: string) => void;
+  onLeaveHome: () => Promise<unknown> | void;
 }) {
   const [name, setName] = useState(state.device.name);
   const [settingsTab, setSettingsTab] = useState<'network' | 'trust' | 'files' | 'system'>('network');
@@ -1487,6 +1552,27 @@ function SettingsView({
       </div>
       <div className="settingsGrid">
         {settingsTab === 'network' ? <>
+        <section className="panel settingsRoom">
+          <div className="panelHeader">
+            <div>
+              <h2>当前房间</h2>
+              <p>{state.home?.name || '未加入房间'} · {state.home ? roomCode(state.home.id) : 'ROOM------'}</p>
+            </div>
+            <span className="statusPill online">{state.home?.createdByDeviceId === state.device.id ? '房主' : '成员'}</span>
+          </div>
+          <div className="settingsMeta">
+            <span>本机代号：{deviceCode(state.device.id)}</span>
+            <span>本机名称：{state.device.name}</span>
+            <span>在线成员：{state.peers.filter((peer) => peer.isOnline).length + 1} 台</span>
+          </div>
+          <div className="rowActions">
+            <button className="secondary" onClick={() => {
+              if (window.confirm('退出当前房间后会回到创建/加入页面，已信任设备需要重新确认。确定退出？')) onLeaveHome();
+            }}>
+              <Power size={16} /> 退出当前房间
+            </button>
+          </div>
+        </section>
         <section className="panel settingsIdentity">
           <h2>本机设备名</h2>
           <div className="inlineEdit">
@@ -2447,7 +2533,14 @@ function App() {
   if (!api) return <main className="loading">请在 Electron 中运行 Lan Control Hub。</main>;
   if (!state) return <main className="loading">正在启动 Lan Control Hub...</main>;
   if (!state.home) {
-    return <SetupScreen onCreate={(name) => run(() => api.createHome(name))} onJoin={(secret, name) => run(() => api.joinHome(secret, name))} />;
+    return (
+      <SetupScreen
+        rooms={state.nearbyRooms || []}
+        onCreate={(name) => run(() => api.createHome(name))}
+        onJoin={(secret, name, expectedHomeId) => run(() => api.joinHome(secret, name, expectedHomeId))}
+        onScanRooms={() => run(() => api.scanRooms())}
+      />
+    );
   }
 
   return (
@@ -2549,6 +2642,7 @@ function App() {
           onRefreshManualPeers={() => run(() => api.refreshManualPeers())}
           onTrustDevice={(peerId) => run(() => api.trustDevice(peerId))}
           onRevokeDevice={(peerId) => run(() => api.revokeDevice(peerId))}
+          onLeaveHome={() => run(() => api.leaveHome())}
         />
       ) : null}
       {error ? <div className="toast">{error}</div> : null}

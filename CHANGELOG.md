@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.13.0
+
+- Add a LAN room lobby on first launch: scan nearby Lan Control Hub rooms, select one, then enter the room password/join key.
+- Add optional `homeName` discovery metadata and a local nearby-room cache so room discovery works without changing the existing trusted control channel.
+- Add a leave-room/reset-network action that returns the app to the create/join screen without uninstalling the app or deleting the device identity.
+- Make the UI emphasize stable room/device codes such as `ROOM-xxxxxx` and `PC-xxxx`, with hostnames kept as secondary details.
+- Update Local API and IPC with `scanRooms` and `leaveHome`, plus docs and release metadata for the room-based workflow.
+
 ## v0.12.1
 
 - Finalize the current daily-use work release after the group conversation sync iteration.

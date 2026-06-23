@@ -29,6 +29,7 @@ import {
   DiscoveryPacket,
   EncryptedEnvelope,
   FirewallStatus,
+  LanRoomInfo,
   MAX_AUDIT_EVENTS,
   MAX_CONTROL_MESSAGE_BYTES,
   MAX_CONVERSATION_EVENTS,
@@ -135,6 +136,7 @@ let localApiPort = DEFAULT_LOCAL_API_PORT;
 let firewallRefreshRunning = false;
 
 const peers = new Map<string, RuntimePeer>();
+const nearbyRooms = new Map<string, LanRoomInfo>();
 const runningTasks = new Map<string, RunningTask>();
 const terminalSessions = new Map<string, TerminalSession>();
 const remoteSessions = new Map<string, RemoteSessionRecord>();
@@ -571,6 +573,120 @@ function networkInfo(): NetworkInfo {
   };
 }
 
+function roomDisplayName(homeId: string, homeName?: string) {
+  const clean = String(homeName || '').trim();
+  return clean || `LAN Room ${homeId.slice(0, 6).toUpperCase()}`;
+}
+
+function rememberLanRoom(packet: DiscoveryPacket, address: string, source: LanRoomInfo['source'] = 'broadcast') {
+  if (!packet.homeId || !packet.device?.id) return false;
+  const now = Date.now();
+  const current = nearbyRooms.get(packet.homeId);
+  const device = {
+    id: packet.device.id,
+    name: packet.device.name,
+    address,
+    controlPort: packet.controlPort,
+    webPort: packet.webPort,
+    appVersion: packet.appVersion,
+    publicKeyHash: packet.device.publicKeyHash,
+    lastSeenAt: now
+  };
+  const devices = [
+    ...(current?.devices || []).filter((item) => item.id !== device.id),
+    device
+  ].sort((a, b) => b.lastSeenAt - a.lastSeenAt).slice(0, 12);
+  const homeName = String(packet.homeName || current?.homeName || '').trim() || undefined;
+  nearbyRooms.set(packet.homeId, {
+    homeId: packet.homeId,
+    homeName,
+    displayName: roomDisplayName(packet.homeId, homeName),
+    hostAddress: address,
+    webPort: packet.webPort,
+    deviceCount: devices.length,
+    devices,
+    lastSeenAt: now,
+    source,
+    isCurrent: Boolean(state.home && state.home.id === packet.homeId)
+  });
+  return true;
+}
+
+function serializeNearbyRooms() {
+  const now = Date.now();
+  for (const [homeId, room] of nearbyRooms) {
+    if (now - room.lastSeenAt > PEER_TIMEOUT_MS * 12) nearbyRooms.delete(homeId);
+  }
+  return [...nearbyRooms.values()]
+    .map((room) => ({
+      ...room,
+      isCurrent: Boolean(state.home && state.home.id === room.homeId),
+      devices: room.devices
+        .filter((device) => now - device.lastSeenAt <= PEER_TIMEOUT_MS * 12)
+        .sort((a, b) => b.lastSeenAt - a.lastSeenAt)
+    }))
+    .sort((a, b) => Number(b.isCurrent) - Number(a.isCurrent)
+      || b.lastSeenAt - a.lastSeenAt
+      || a.displayName.localeCompare(b.displayName));
+}
+
+function localScanHosts() {
+  const hosts = new Set<string>();
+  const ownAddresses = new Set(localAddresses());
+  for (const entries of Object.values(os.networkInterfaces())) {
+    for (const entry of entries || []) {
+      if (entry.family !== 'IPv4' || entry.internal || !entry.address || !entry.netmask) continue;
+      const addressNumber = ipv4ToNumber(entry.address);
+      const network = addressNumber & ipv4ToNumber(entry.netmask);
+      const broadcast = network | (~ipv4ToNumber(entry.netmask) >>> 0);
+      const hostCount = broadcast > network ? broadcast - network - 1 : 0;
+      if (hostCount > 0 && hostCount <= 512) {
+        for (let value = network + 1; value < broadcast; value += 1) hosts.add(numberToIpv4(value >>> 0));
+      } else {
+        const base = addressNumber & 0xffffff00;
+        for (let value = 1; value < 255; value += 1) hosts.add(numberToIpv4((base + value) >>> 0));
+      }
+    }
+  }
+  for (const address of ownAddresses) hosts.delete(address);
+  return [...hosts];
+}
+
+async function runLimited<T>(items: T[], limit: number, worker: (item: T) => Promise<void>) {
+  let index = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (index < items.length) {
+      const item = items[index++];
+      try {
+        await worker(item);
+      } catch {
+        // LAN scanning is best-effort; offline hosts are expected.
+      }
+    }
+  });
+  await Promise.all(workers);
+}
+
+async function probeLanRoom(host: string) {
+  for (let port = DEFAULT_WEB_PORT; port <= DEFAULT_WEB_PORT + 2; port += 1) {
+    try {
+      const packet = await getHttpJson<DiscoveryPacket>(`http://${host}:${port}/api/presence`, 650);
+      if (isDiscoveryPacket(packet)) {
+        rememberLanRoom(packet, host, 'scan');
+        return;
+      }
+    } catch {
+      // Try the next likely LCH web port.
+    }
+  }
+}
+
+async function scanLanRooms() {
+  await runLimited(localScanHosts(), 64, probeLanRoom);
+  emitState();
+  return serializeNearbyRooms();
+}
+
 function isBlockedDevice(deviceId: string, publicKeyHashValue?: string) {
   return isDeviceBlocked(state.blockedDevices, deviceId, publicKeyHashValue);
 }
@@ -700,6 +816,7 @@ function appStateView() {
     fileShareEnabled: state.fileShareEnabled,
     autoTrustDevices: state.autoTrustDevices,
     manualPeerAddresses: state.manualPeerAddresses,
+    nearbyRooms: serializeNearbyRooms(),
     transfers: state.transfers.slice(0, MAX_TRANSFER_RECORDS),
     networkInfo: networkInfo(),
     webrtc: state.webrtc
@@ -1300,7 +1417,8 @@ function createHome(name = DEFAULT_HOME_NAME) {
     id: homeIdFromSecret(secret),
     name: String(name || DEFAULT_HOME_NAME).trim().slice(0, 40) || DEFAULT_HOME_NAME,
     secret,
-    createdAt: Date.now()
+    createdAt: Date.now(),
+    createdByDeviceId: state.device.id
   };
   trustSelf();
   saveState();
@@ -1309,12 +1427,26 @@ function createHome(name = DEFAULT_HOME_NAME) {
   return appStateView();
 }
 
-function joinHome(secret: string, name = DEFAULT_HOME_NAME) {
+function leaveHome() {
+  state.home = null;
+  resetNetworkTrust();
+  state.manualPeerAddresses = [];
+  saveState();
+  emitState();
+  return appStateView();
+}
+
+function joinHome(secret: string, name = DEFAULT_HOME_NAME, expectedHomeId = '') {
   const cleanSecret = String(secret || '').trim();
   if (cleanSecret.length < 16) throw new Error('家庭密钥太短或无效');
+  const homeId = homeIdFromSecret(cleanSecret);
+  const expected = String(expectedHomeId || '').trim();
+  if (expected && expected !== homeId) {
+    throw new Error('房间密码和选中的局域网房间不匹配，请重新复制该房间的密码');
+  }
   resetNetworkTrust();
   state.home = {
-    id: homeIdFromSecret(cleanSecret),
+    id: homeId,
     name: String(name || DEFAULT_HOME_NAME).trim().slice(0, 40) || DEFAULT_HOME_NAME,
     secret: cleanSecret,
     createdAt: Date.now()
@@ -1467,6 +1599,7 @@ function localAnnouncement(): DiscoveryPacket | null {
     protocolVersion: CONTROL_PROTOCOL_VERSION,
     minSupportedProtocolVersion: MIN_SUPPORTED_PROTOCOL_VERSION,
     homeId: state.home.id,
+    homeName: state.home.name,
     appVersion: APP_VERSION,
     device: {
       id: state.device.id,
@@ -1634,7 +1767,13 @@ function startDiscovery() {
   discoverySocket.on('message', (message, remote) => {
     try {
       const packet = JSON.parse(message.toString('utf8'));
-      if (isDiscoveryPacket(packet) && rememberPeer(packet, remote.address)) emitState();
+      if (isDiscoveryPacket(packet)) {
+        const roomChanged = packet.device.id !== state.device.id
+          ? rememberLanRoom(packet, remote.address, 'broadcast')
+          : false;
+        const peerChanged = rememberPeer(packet, remote.address);
+        if (roomChanged || peerChanged) emitState();
+      }
     } catch {
       // Ignore unrelated UDP traffic.
     }
@@ -3294,7 +3433,10 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown) {
 
 async function handleLocalApi(pathname: string, method: string, body: any) {
   if (method === 'POST' && pathname === '/api/setup/create') return createHome(body.name);
-  if (method === 'POST' && pathname === '/api/setup/join') return joinHome(body.secret, body.name);
+  if (method === 'POST' && pathname === '/api/setup/join') return joinHome(body.secret, body.name, body.expectedHomeId);
+  if (method === 'POST' && pathname === '/api/setup/leave') return leaveHome();
+  if (method === 'GET' && pathname === '/api/rooms') return serializeNearbyRooms();
+  if (method === 'POST' && pathname === '/api/rooms/scan') return scanLanRooms();
   if (method === 'GET' && pathname === '/api/state') return appStateView();
   if (method === 'GET' && pathname === '/api/firewall/status') return getFirewallStatus();
   if (method === 'POST' && pathname === '/api/firewall/repair') return repairFirewallRules(body.elevated !== false);
@@ -3614,7 +3756,9 @@ function registerIpc() {
   ipcMain.handle('lch:check-updates', () => checkForUpdates());
   ipcMain.handle('lch:open-latest-release', () => shell.openExternal(RELEASES_URL));
   ipcMain.handle('lch:create-home', (_event, name) => createHome(name));
-  ipcMain.handle('lch:join-home', (_event, secret, name) => joinHome(secret, name));
+  ipcMain.handle('lch:join-home', (_event, secret, name, expectedHomeId) => joinHome(secret, name, expectedHomeId));
+  ipcMain.handle('lch:leave-home', () => leaveHome());
+  ipcMain.handle('lch:scan-rooms', () => scanLanRooms());
   ipcMain.handle('lch:update-name', (_event, name) => {
     const cleanName = String(name || '').trim().slice(0, 40);
     if (!cleanName) throw new Error('设备名不能为空');

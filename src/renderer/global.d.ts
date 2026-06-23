@@ -1,4 +1,4 @@
-import type { AppStateView, DevicePreference, FirewallStatus, RemoteInputEvent, RemoteOpenResult, RemoteScreenshotResult, RemoteSessionRecord, ScreenSignalEvent, SharedFileToken, TerminalOpenResult, TerminalOutputEvent, TransferRecord, WebRtcConfig } from '../shared/protocol';
+import type { AppStateView, DevicePreference, FirewallStatus, LanRoomInfo, RemoteInputEvent, RemoteOpenResult, RemoteScreenshotResult, RemoteSessionRecord, ScreenSignalEvent, SharedFileToken, TerminalOpenResult, TerminalOutputEvent, TransferRecord, WebRtcConfig } from '../shared/protocol';
 
 declare global {
   interface Window {
@@ -14,7 +14,9 @@ declare global {
       checkUpdates: () => Promise<{ currentVersion: string; latestVersion: string; tag: string; updateAvailable: boolean; url: string; publishedAt?: string; assets: Array<{ name: string; size: number; url: string }> }>;
       openLatestRelease: () => Promise<void>;
       createHome: (name: string) => Promise<AppStateView>;
-      joinHome: (secret: string, name: string) => Promise<AppStateView>;
+      joinHome: (secret: string, name: string, expectedHomeId?: string) => Promise<AppStateView>;
+      leaveHome: () => Promise<AppStateView>;
+      scanRooms: () => Promise<LanRoomInfo[]>;
       updateName: (name: string) => Promise<AppStateView>;
       updateDevicePreference: (peerId: string, patch: Partial<DevicePreference>) => Promise<AppStateView>;
       setFileSharing: (enabled: boolean) => Promise<AppStateView>;

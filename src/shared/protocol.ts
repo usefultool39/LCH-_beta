@@ -1,5 +1,5 @@
 export const APP_NAME = 'Lan Control Hub';
-export const APP_VERSION = '0.12.1';
+export const APP_VERSION = '0.13.0';
 export const STATE_SCHEMA_VERSION = 5;
 export const DISCOVERY_PROTOCOL_VERSION = 1;
 export const CONTROL_PROTOCOL_VERSION = 1;
@@ -107,6 +107,30 @@ export interface ManualPeerAddress {
   peerName?: string;
 }
 
+export interface LanRoomDevice {
+  id: string;
+  name: string;
+  address: string;
+  controlPort: number;
+  webPort: number;
+  appVersion?: string;
+  publicKeyHash?: string;
+  lastSeenAt: number;
+}
+
+export interface LanRoomInfo {
+  homeId: string;
+  homeName?: string;
+  displayName: string;
+  hostAddress: string;
+  webPort: number;
+  deviceCount: number;
+  devices: LanRoomDevice[];
+  lastSeenAt: number;
+  source: 'broadcast' | 'scan' | 'manual';
+  isCurrent?: boolean;
+}
+
 export interface DeviceIdentity {
   id: string;
   name: string;
@@ -120,6 +144,7 @@ export interface HomeInfo {
   name: string;
   secret: string;
   createdAt: number;
+  createdByDeviceId?: string;
 }
 
 export interface DiscoveryPacket {
@@ -128,6 +153,7 @@ export interface DiscoveryPacket {
   protocolVersion?: number;
   minSupportedProtocolVersion?: number;
   homeId: string;
+  homeName?: string;
   appVersion: string;
   device: DeviceIdentity;
   address?: string;
@@ -326,6 +352,7 @@ export interface AppStateView {
   fileShareEnabled: boolean;
   autoTrustDevices: boolean;
   manualPeerAddresses: ManualPeerAddress[];
+  nearbyRooms: LanRoomInfo[];
   transfers: TransferRecord[];
   networkInfo: NetworkInfo;
   webrtc: WebRtcConfig;
