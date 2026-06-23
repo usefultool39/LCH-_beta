@@ -40,13 +40,14 @@ import {
   TerminalSquare,
   Trash2,
   Upload,
+  Users,
   Image as ImageIcon,
   Film,
   Music2,
   FileText
 } from 'lucide-react';
 import { APP_VERSION, CHAT_REACTION_EMOJIS, DEFAULT_WEBRTC_CONFIG, MAX_FILE_BYTES } from '../shared/protocol';
-import type { AppStateView, DevicePreference, FirewallStatus, PeerInfo, RemoteInputEvent, RemoteOpenResult, RemoteSessionRecord, SharedFileToken, SharedFolderListing, TaskRecord, TerminalOutputEvent, TransferRecord, WebRtcConfig, WebRtcIceTransportPolicy } from '../shared/protocol';
+import type { AppStateView, ConversationRecord, DevicePreference, FirewallStatus, PeerInfo, RemoteInputEvent, RemoteOpenResult, RemoteSessionRecord, SharedFileToken, SharedFolderListing, TaskRecord, TerminalOutputEvent, TransferRecord, WebRtcConfig, WebRtcIceTransportPolicy } from '../shared/protocol';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
 
@@ -178,6 +179,71 @@ function formatDuration(start?: number, end?: number) {
 function peerLabel(peer: PeerInfo | null) {
   if (!peer) return '未选择设备';
   return peer.displayName || peer.alias || peer.name;
+}
+
+function peerLabelById(state: AppStateView, peerId: string) {
+  if (peerId === state.device.id) return state.device.name;
+  const peer = state.peers.find((item) => item.id === peerId);
+  const trusted = state.trustedDevices[peerId];
+  const preference = state.devicePreferences[peerId];
+  return peer?.displayName || preference?.alias || peer?.name || trusted?.name || peerId;
+}
+
+function directPeerId(record: ConversationRecord, state: AppStateView) {
+  return record.memberIds.find((id) => id !== state.device.id) || (record.kind === 'direct' && record.id !== state.device.id ? record.id : '');
+}
+
+function fallbackDirectConversation(state: AppStateView, peer: PeerInfo): ConversationRecord {
+  const existing = state.conversationRecords[peer.id];
+  if (existing) return existing;
+  const lastMessageAt = state.conversations[peer.id]?.reduce((latest, event) => Math.max(latest, Number(event.createdAt || 0)), 0) || undefined;
+  return {
+    id: peer.id,
+    kind: 'direct',
+    memberIds: [state.device.id, peer.id],
+    createdAt: lastMessageAt || 0,
+    updatedAt: lastMessageAt || 0,
+    lastMessageAt
+  };
+}
+
+function conversationTitle(record: ConversationRecord, state: AppStateView) {
+  if (record.kind === 'direct') return peerLabelById(state, directPeerId(record, state) || record.id);
+  return record.title || `群组 ${record.memberIds.filter((id) => id !== state.device.id).length + 1}`;
+}
+
+function conversationSubtitle(record: ConversationRecord, state: AppStateView) {
+  if (record.kind === 'direct') {
+    const peer = state.peers.find((item) => item.id === directPeerId(record, state) || item.id === record.id);
+    return peer ? statusText(peer) : '离线设备';
+  }
+  const names = record.memberIds.slice(0, 4).map((id) => peerLabelById(state, id)).join('、');
+  const extra = Math.max(0, record.memberIds.length - 4);
+  return `${record.memberIds.length} 个成员 · ${names}${extra ? ` 等 ${extra} 个` : ''}`;
+}
+
+function buildConversationList(state: AppStateView) {
+  const records = new Map<string, ConversationRecord>();
+  Object.values(state.conversationRecords || {}).forEach((record) => records.set(record.id, record));
+  state.peers.forEach((peer) => records.set(peer.id, fallbackDirectConversation(state, peer)));
+  return [...records.values()].sort((a, b) => {
+    const aTime = a.lastMessageAt || a.updatedAt || 0;
+    const bTime = b.lastMessageAt || b.updatedAt || 0;
+    return bTime - aTime || Number(a.kind === 'direct') - Number(b.kind === 'direct') || conversationTitle(a, state).localeCompare(conversationTitle(b, state));
+  });
+}
+
+function canSendToConversation(record: ConversationRecord | null, state: AppStateView) {
+  if (!record) return false;
+  if (record.kind === 'direct') {
+    const peer = state.peers.find((item) => item.id === directPeerId(record, state) || item.id === record.id);
+    return Boolean(peer?.isOnline && peer.trusted && !peer.readOnly);
+  }
+  return record.memberIds.some((id) => {
+    if (id === state.device.id) return false;
+    const peer = state.peers.find((item) => item.id === id);
+    return Boolean(peer?.isOnline && peer.trusted && !peer.readOnly);
+  });
 }
 
 function statusText(peer: PeerInfo) {
@@ -621,9 +687,12 @@ function renderMessageMarkdown(text = '') {
   return <div className="messageMarkdown">{blocks}</div>;
 }
 
-function ChatView({ peer, messages, onSendText, onSendFile, onReact }: {
-  peer: PeerInfo | null;
+function ChatView({ state, conversation, messages, onSelectConversation, onCreateGroup, onSendText, onSendFile, onReact }: {
+  state: AppStateView;
+  conversation: ConversationRecord | null;
   messages: any[];
+  onSelectConversation: (conversationId: string) => void;
+  onCreateGroup: (title: string, memberIds: string[]) => void;
   onSendText: (text: string, options?: { replyTo?: ReturnType<typeof replyRefFromMessage> }) => void;
   onSendFile: (file: File) => void;
   onReact: (messageId: string, emoji: string) => void;
@@ -631,88 +700,169 @@ function ChatView({ peer, messages, onSendText, onSendFile, onReact }: {
   const [text, setText] = useState('');
   const [query, setQuery] = useState('');
   const [replyTo, setReplyTo] = useState<any | null>(null);
+  const [creatingGroup, setCreatingGroup] = useState(false);
+  const [groupTitle, setGroupTitle] = useState('');
+  const [groupMemberIds, setGroupMemberIds] = useState<string[]>([]);
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const conversations = useMemo(() => buildConversationList(state), [state]);
+  const directConversations = conversations.filter((item) => item.kind === 'direct');
+  const groupConversations = conversations.filter((item) => item.kind === 'group');
+  const directPeer = conversation?.kind === 'direct'
+    ? state.peers.find((peer) => peer.id === directPeerId(conversation, state) || peer.id === conversation.id) || null
+    : null;
+  const canSend = canSendToConversation(conversation, state);
+  const canSendFile = Boolean(directPeer && canSend);
   const filteredMessages = messages.filter((message) => !query.trim() || messageSearchText(message).includes(query.trim().toLowerCase()));
-  if (!peer) {
-    return <section className="workspace centerHint">选择一台设备开始聊天。</section>;
+
+  useEffect(() => {
+    setReplyTo(null);
+    setQuery('');
+  }, [conversation?.id]);
+
+  function toggleGroupMember(peerId: string) {
+    setGroupMemberIds((current) => current.includes(peerId) ? current.filter((id) => id !== peerId) : [...current, peerId]);
   }
+
+  function renderConversationRows(items: ConversationRecord[]) {
+    return items.length ? items.map((item) => (
+      <button
+        className={`conversationRow ${item.id === conversation?.id ? 'active' : ''}`}
+        key={item.id}
+        onClick={() => onSelectConversation(item.id)}
+      >
+        <span className="conversationIcon">{item.kind === 'group' ? <Users size={16} /> : <MessageSquare size={16} />}</span>
+        <span>
+          <strong>{conversationTitle(item, state)}</strong>
+          <small>{conversationSubtitle(item, state)}</small>
+        </span>
+        {item.lastMessageAt ? <time>{formatRelativeTime(item.lastMessageAt)}</time> : null}
+      </button>
+    )) : <div className="empty small">暂无会话</div>;
+  }
+
   return (
     <section className="chatPane">
-      <header className="workspaceHeader">
-        <div>
-          <h1>{peer.name}</h1>
-          <p>支持搜索、回复、代码块和 reaction，旧设备会自动降级为普通文本消息</p>
+      <aside className="conversationList">
+        <div className="conversationListHeader">
+          <div>
+            <strong>会话</strong>
+            <small>{conversations.length} 个</small>
+          </div>
+          <button className="iconButton" title="新建群组" onClick={() => setCreatingGroup((current) => !current)}><Plus size={17} /></button>
         </div>
-      </header>
-      <div className="chatToolbar">
-        <Search size={16} />
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索消息、文件或引用" />
-      </div>
-      <div className="messages">
-        {filteredMessages.length ? filteredMessages.map((message) => (
-          <div className={`message ${message.direction}`} key={message.id}>
-            <div className="bubble">
-              {message.replyTo ? (
-                <button className="replyQuote" onClick={() => setQuery(message.replyTo?.text || message.replyTo?.name || '')}>
-                  <strong>{message.replyTo.senderName || '引用消息'}</strong>
-                  <span>{message.replyTo.type === 'file' ? message.replyTo.name : message.replyTo.text}</span>
-                </button>
-              ) : null}
-              {message.type === 'text' ? renderMessageMarkdown(message.text || '') : (
-                <div className="fileBubble">
-                  <strong>{message.name}</strong>
-                  <small>{formatBytes(message.size)}</small>
-                  {message.path ? <small>{message.path}</small> : null}
-                </div>
-              )}
-              {message.reactions ? (
-                <div className="reactionSummary">
-                  {Object.entries(message.reactions).map(([emoji, actors]) => (
-                    <button key={emoji} onClick={() => onReact(message.id, emoji)}>
-                      <span>{emoji}</span>
-                      <small>{Array.isArray(actors) ? actors.length : 0}</small>
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-              <div className="messageActions">
-                <button title="回复" onClick={() => setReplyTo(message)}><Reply size={13} /></button>
-                {CHAT_REACTION_EMOJIS.map((emoji) => (
-                  <button title={`发送 ${emoji}`} key={emoji} onClick={() => onReact(message.id, emoji)}>{emoji}</button>
-                ))}
-              </div>
-              <time>{formatTime(message.createdAt)}</time>
+        {creatingGroup ? (
+          <div className="groupDraftBox">
+            <input value={groupTitle} onChange={(event) => setGroupTitle(event.target.value)} placeholder="群组名称" />
+            <div className="groupMemberList">
+              {state.peers.length ? state.peers.map((peer) => (
+                <label key={peer.id}>
+                  <input type="checkbox" checked={groupMemberIds.includes(peer.id)} onChange={() => toggleGroupMember(peer.id)} />
+                  <span>{peerLabel(peer)}</span>
+                  <small>{statusText(peer)}</small>
+                </label>
+              )) : <span className="empty small">暂无可选设备</span>}
+            </div>
+            <div className="rowActions">
+              <button className="primary" disabled={!groupMemberIds.length} onClick={() => {
+                onCreateGroup(groupTitle, groupMemberIds);
+                setCreatingGroup(false);
+                setGroupTitle('');
+                setGroupMemberIds([]);
+              }}><Users size={15} /> 创建</button>
+              <button className="secondary" onClick={() => setCreatingGroup(false)}>取消</button>
             </div>
           </div>
-        )) : <div className="empty">{query.trim() ? '没有匹配的消息。' : '还没有消息。'}</div>}
-      </div>
-      <footer className="composer">
-        <input
-          hidden
-          ref={fileRef}
-          type="file"
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            if (file) onSendFile(file);
-            event.target.value = '';
-          }}
-        />
-        <button className="secondary" onClick={() => fileRef.current?.click()}><Upload size={16} /> 文件</button>
-        <div className="composerText">
-          {replyTo ? (
-            <div className="replyDraft">
-              <span>回复 {replyTo.senderName || (replyTo.direction === 'outgoing' ? '我' : peer.name)}：{replyTo.type === 'file' ? replyTo.name : replyTo.text}</span>
-              <button onClick={() => setReplyTo(null)}>取消</button>
-            </div>
-          ) : null}
-          <textarea value={text} onChange={(event) => setText(event.target.value)} placeholder="输入消息，支持 **加粗**、`代码` 和 ```代码块```" />
+        ) : null}
+        <div className="conversationGroup">
+          <h2>直接会话</h2>
+          {renderConversationRows(directConversations)}
         </div>
-        <button className="primary" disabled={!text.trim()} onClick={() => {
-          onSendText(text, replyTo ? { replyTo: replyRefFromMessage(replyTo) } : undefined);
-          setText('');
-          setReplyTo(null);
-        }}><Send size={16} /> 发送</button>
-      </footer>
+        <div className="conversationGroup">
+          <h2>群组</h2>
+          {renderConversationRows(groupConversations)}
+        </div>
+      </aside>
+      <div className="chatMain">
+        <header className="workspaceHeader">
+          <div>
+            <h1>{conversation ? conversationTitle(conversation, state) : '聊天'}</h1>
+            <p>{conversation ? conversationSubtitle(conversation, state) : '选择一个会话开始聊天，或从左侧新建群组。'}</p>
+          </div>
+          {conversation ? <span className={`statusPill ${canSend ? 'online' : 'offline'}`}>{canSend ? '可发送' : '不可发送'}</span> : null}
+        </header>
+        <div className="chatToolbar">
+          <Search size={16} />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索消息、文件或引用" />
+        </div>
+        <div className="messages">
+          {conversation ? (
+            filteredMessages.length ? filteredMessages.map((message) => (
+              <div className={`message ${message.direction}`} key={message.id}>
+                <div className="bubble">
+                  {message.replyTo ? (
+                    <button className="replyQuote" onClick={() => setQuery(message.replyTo?.text || message.replyTo?.name || '')}>
+                      <strong>{message.replyTo.senderName || '引用消息'}</strong>
+                      <span>{message.replyTo.type === 'file' ? message.replyTo.name : message.replyTo.text}</span>
+                    </button>
+                  ) : null}
+                  {conversation.kind === 'group' ? <strong className="messageSender">{message.senderName || peerLabelById(state, message.peerId)}</strong> : null}
+                  {message.type === 'text' ? renderMessageMarkdown(message.text || '') : (
+                    <div className="fileBubble">
+                      <strong>{message.name}</strong>
+                      <small>{formatBytes(message.size)}</small>
+                      {message.path ? <small>{message.path}</small> : null}
+                    </div>
+                  )}
+                  {message.reactions ? (
+                    <div className="reactionSummary">
+                      {Object.entries(message.reactions).map(([emoji, actors]) => (
+                        <button key={emoji} onClick={() => onReact(message.id, emoji)}>
+                          <span>{emoji}</span>
+                          <small>{Array.isArray(actors) ? actors.length : 0}</small>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                  <div className="messageActions">
+                    <button title="回复" onClick={() => setReplyTo(message)}><Reply size={13} /></button>
+                    {CHAT_REACTION_EMOJIS.map((emoji) => (
+                      <button title={`发送 ${emoji}`} key={emoji} onClick={() => onReact(message.id, emoji)}>{emoji}</button>
+                    ))}
+                  </div>
+                  <time>{formatTime(message.createdAt)}</time>
+                </div>
+              </div>
+            )) : <div className="empty">{query.trim() ? '没有匹配的消息。' : '还没有消息。'}</div>
+          ) : <div className="empty">选择一个会话开始聊天。</div>}
+        </div>
+        <footer className="composer">
+          <input
+            hidden
+            ref={fileRef}
+            type="file"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file && canSendFile) onSendFile(file);
+              event.target.value = '';
+            }}
+          />
+          <button className="secondary" disabled={!canSendFile} title={canSendFile ? '发送文件' : '群组文件发送后续版本支持'} onClick={() => fileRef.current?.click()}><Upload size={16} /> 文件</button>
+          <div className="composerText">
+            {replyTo ? (
+              <div className="replyDraft">
+                <span>回复 {replyTo.senderName || (replyTo.direction === 'outgoing' ? '我' : conversation ? conversationTitle(conversation, state) : '会话')}：{replyTo.type === 'file' ? replyTo.name : replyTo.text}</span>
+                <button onClick={() => setReplyTo(null)}>取消</button>
+              </div>
+            ) : null}
+            <textarea value={text} onChange={(event) => setText(event.target.value)} placeholder="输入消息，支持 **加粗**、`代码` 和 ```代码块```" />
+          </div>
+          <button className="primary" disabled={!conversation || !text.trim() || !canSend} onClick={() => {
+            onSendText(text, replyTo ? { replyTo: replyRefFromMessage(replyTo) } : undefined);
+            setText('');
+            setReplyTo(null);
+          }}><Send size={16} /> 发送</button>
+        </footer>
+      </div>
     </section>
   );
 }
@@ -2028,6 +2178,7 @@ function App() {
   const [state, setState] = useState<AppStateView | null>(null);
   const [view, setView] = useState<View>('dashboard');
   const [selectedPeerId, setSelectedPeerId] = useState('');
+  const [selectedConversationId, setSelectedConversationId] = useState('');
   const [selectedPeerIds, setSelectedPeerIds] = useState<string[]>([]);
   const [error, setError] = useState('');
   const [terminal, setTerminal] = useState<TerminalTab | null>(null);
@@ -2070,13 +2221,27 @@ function App() {
   }, []);
 
   const selectedPeer = useMemo(() => state?.peers.find((peer) => peer.id === selectedPeerId) || state?.peers[0] || null, [state?.peers, selectedPeerId]);
-  const messages = selectedPeer ? state?.conversations[selectedPeer.id] || [] : [];
+  const chatConversations = useMemo(() => state ? buildConversationList(state) : [], [state]);
+  const selectedConversation = useMemo(() => {
+    if (!state) return null;
+    const preferredId = selectedConversationId || selectedPeer?.id || chatConversations[0]?.id || '';
+    return chatConversations.find((conversation) => conversation.id === preferredId) || chatConversations[0] || null;
+  }, [chatConversations, selectedConversationId, selectedPeer?.id, state]);
+  const messages = selectedConversation ? state?.conversations[selectedConversation.id] || [] : [];
 
   useEffect(() => {
-    if (view === 'chat' && selectedPeer?.unreadCount) {
-      updatePreference(selectedPeer.id, { unreadCount: 0 });
+    if (!state || selectedConversationId) return;
+    const fallbackId = selectedPeer?.id || chatConversations[0]?.id || '';
+    if (fallbackId) setSelectedConversationId(fallbackId);
+  }, [chatConversations, selectedConversationId, selectedPeer?.id, state]);
+
+  useEffect(() => {
+    if (view === 'chat' && selectedConversation?.kind === 'direct') {
+      const peerId = directPeerId(selectedConversation, state!) || selectedConversation.id;
+      const peer = state?.peers.find((item) => item.id === peerId);
+      if (peer?.unreadCount) updatePreference(peer.id, { unreadCount: 0 });
     }
-  }, [view, selectedPeer?.id, selectedPeer?.unreadCount]);
+  }, [view, selectedConversation?.id, state?.peers]);
 
   async function run(action: () => Promise<unknown>) {
     setError('');
@@ -2264,6 +2429,7 @@ function App() {
         onTogglePeer={togglePeer}
         onSelectPeer={(peerId) => {
           setSelectedPeerId(peerId);
+          setSelectedConversationId(peerId);
           if (!selectedPeerIds.includes(peerId)) setSelectedPeerIds([peerId]);
         }}
         onUpdatePreference={updatePreference}
@@ -2286,15 +2452,23 @@ function App() {
       ) : null}
       {view === 'chat' ? (
         <ChatView
-          peer={selectedPeer}
+          state={state}
+          conversation={selectedConversation}
           messages={messages || []}
-          onSendText={(text, options) => selectedPeer && run(() => api.sendText(selectedPeer.id, text, options))}
-          onSendFile={(file) => selectedPeer && run(async () => {
+          onSelectConversation={setSelectedConversationId}
+          onCreateGroup={(title, memberIds) => {
+            const conversationId = `conv:${crypto.randomUUID()}`;
+            setSelectedConversationId(conversationId);
+            run(() => api.createConversation({ id: conversationId, title, memberIds, kind: 'group' }));
+          }}
+          onSendText={(text, options) => selectedConversation && run(() => api.sendConversationText(selectedConversation.id, text, options))}
+          onSendFile={(file) => selectedConversation?.kind === 'direct' && run(async () => {
+            const peerId = directPeerId(selectedConversation, state) || selectedConversation.id;
             const base64 = await readFileAsBase64(file);
-            return api.sendFile(selectedPeer.id, { name: file.name, size: file.size, base64 });
+            return api.sendFile(peerId, { name: file.name, size: file.size, base64 });
           })}
-          onReact={(messageId, emoji) => selectedPeer && run(async () => {
-            const result = await api.reactToMessage(selectedPeer.id, messageId, emoji);
+          onReact={(messageId, emoji) => selectedConversation && run(async () => {
+            const result = await api.reactToConversationMessage(selectedConversation.id, messageId, emoji);
             return result.state;
           })}
         />

@@ -374,6 +374,19 @@ textarea:focus {
   background: #f5f7fb;
 }
 
+.chatPane {
+  display: grid;
+  grid-template-columns: minmax(230px, 280px) minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.chatMain {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 0;
+}
+
 .workspaceHeader {
   display: flex;
   min-height: 82px;
@@ -458,6 +471,12 @@ textarea:focus {
 .primary {
   background: #2563eb;
   color: white;
+}
+
+.primary:disabled,
+.secondary:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .secondary {
@@ -821,8 +840,122 @@ textarea:focus {
   background: white;
 }
 
+.conversationList {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  border-right: 1px solid #dbe3ef;
+  background: #ffffff;
+}
+
+.conversationListHeader {
+  display: flex;
+  min-height: 72px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.conversationListHeader strong,
+.conversationListHeader small,
+.conversationRow strong,
+.conversationRow small {
+  display: block;
+}
+
+.conversationListHeader small,
+.conversationRow small,
+.conversationRow time {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.groupDraftBox {
+  display: grid;
+  gap: 10px;
+  margin: 12px;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  padding: 12px;
+  background: #f8fafc;
+}
+
+.groupMemberList {
+  display: grid;
+  gap: 7px;
+  max-height: 210px;
+  overflow: auto;
+}
+
+.groupMemberList label {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid #e5edf7;
+  border-radius: 7px;
+  padding: 7px;
+  background: white;
+  font-size: 13px;
+}
+
+.groupMemberList span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversationGroup {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+}
+
+.conversationGroup h2 {
+  margin: 4px 0 2px;
+  color: #475569;
+  font-size: 12px;
+  letter-spacing: 0;
+}
+
+.conversationRow {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  border-radius: 7px;
+  padding: 9px 8px;
+  color: #334155;
+  background: transparent;
+  text-align: left;
+}
+
+.conversationRow:hover,
+.conversationRow.active {
+  background: #eef5ff;
+}
+
+.conversationIcon {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  color: #1d4ed8;
+  background: #dbeafe;
+}
+
+.empty.small {
+  padding: 8px;
+  font-size: 12px;
+}
+
 .messages {
-  min-height: calc(100vh - 210px);
+  min-height: 0;
   overflow: auto;
   padding: 22px 28px;
 }
@@ -875,6 +1008,17 @@ textarea:focus {
 .messageMarkdown {
   display: grid;
   gap: 7px;
+}
+
+.messageSender {
+  display: block;
+  margin-bottom: 5px;
+  color: #1d4ed8;
+  font-size: 12px;
+}
+
+.message.outgoing .messageSender {
+  color: rgba(255, 255, 255, 0.82);
 }
 
 .messageMarkdown code {
@@ -2164,6 +2308,7 @@ textarea:focus {
   }
 
   .commandBand,
+  .chatPane,
   .fileLayout,
   .remoteFileWorkspace,
   .settingsGrid,
@@ -2244,6 +2389,12 @@ textarea:focus {
 
   .iconButton {
     width: 100%;
+  }
+
+  .conversationList {
+    max-height: 260px;
+    border-right: 0;
+    border-bottom: 1px solid #dbe3ef;
   }
 
   .headerStats {

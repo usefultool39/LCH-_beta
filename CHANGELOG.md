@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.10.0
+
+- Add the first chat conversation list UI with direct conversations and locally created group conversations.
+- Allow group text messages to be sent through the existing encrypted `chat.send` channel by delivering the same message to each conversation member.
+- Preserve direct chat compatibility: one-to-one conversation IDs still match peer IDs, and old devices can ignore the optional group metadata.
+- Add conversation recipient helper tests and document the current group-chat boundary; group file sending remains a later iteration.
+
 ## v0.9.0
 
 - Add conversation metadata records beside the existing conversation event store as the foundation for future group chat.
