@@ -16,6 +16,7 @@ test('capability versions are declared for every advertised capability', () => {
   assert.equal(CAPABILITIES.includes('chat.markdown'), true);
   assert.equal(CAPABILITIES.includes('chat.reply'), true);
   assert.equal(CAPABILITIES.includes('chat.reactions'), true);
+  assert.equal(CAPABILITIES.includes('chat.conversations'), true);
   for (const capability of CAPABILITIES) {
     assert.equal(CAPABILITY_VERSIONS[capability], 1);
   }

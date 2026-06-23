@@ -17,6 +17,7 @@ import {
   CAPABILITY_VERSIONS,
   CHAT_REACTION_EMOJIS,
   COMMAND_TIMEOUT_MS,
+  ConversationRecord,
   CONTROL_PROTOCOL_VERSION,
   DEFAULT_CONTROL_PORT,
   DEFAULT_LOCAL_API_PORT,
@@ -395,6 +396,7 @@ function createDefaultState(): AppState {
     blockedDevices: {},
     devicePreferences: {},
     conversations: {},
+    conversationRecords: {},
     tasks: [],
     auditLog: [],
     sharedFolder: '',
@@ -689,6 +691,7 @@ function appStateView() {
     blockedDevices: state.blockedDevices,
     devicePreferences: state.devicePreferences,
     conversations: state.conversations,
+    conversationRecords: state.conversationRecords,
     tasks: state.tasks.slice(0, 200),
     remoteSessions: serializeRemoteSessions(),
     auditLog: state.auditLog.slice(-200),
@@ -911,10 +914,55 @@ function createChatMessage(text: string, options: any = {}) {
   if (!cleanText) throw new Error('消息不能为空');
   return {
     id: String(options.id || crypto.randomUUID()),
+    conversationId: options.conversationId ? String(options.conversationId) : undefined,
     text: cleanText,
     markdown: true,
     replyTo: normalizeConversationReplyRef(options.replyTo)
   };
+}
+
+function uniqueDeviceIds(values: unknown[] = []) {
+  return Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean)));
+}
+
+function ensureConversationRecord(conversationId: string, patch: Partial<ConversationRecord> = {}) {
+  const id = String(conversationId || '').trim();
+  if (!id) throw new Error('会话 ID 不能为空');
+  const now = Date.now();
+  const existing = state.conversationRecords[id];
+  const kind = patch.kind || existing?.kind || 'direct';
+  const fallbackMembers = kind === 'direct' ? [state.device.id, id] : [state.device.id];
+  const memberIds = uniqueDeviceIds(patch.memberIds || existing?.memberIds || fallbackMembers);
+  const next: ConversationRecord = {
+    id,
+    kind,
+    title: patch.title ?? existing?.title,
+    memberIds,
+    createdAt: existing?.createdAt || patch.createdAt || now,
+    updatedAt: patch.updatedAt || now,
+    lastMessageAt: patch.lastMessageAt ?? existing?.lastMessageAt,
+    createdByDeviceId: patch.createdByDeviceId ?? existing?.createdByDeviceId
+  };
+  if (!next.title) delete next.title;
+  if (!next.lastMessageAt) delete next.lastMessageAt;
+  if (!next.createdByDeviceId) delete next.createdByDeviceId;
+  state.conversationRecords[id] = next;
+  return next;
+}
+
+function touchConversationRecord(conversationId: string, peerId: string, event: any) {
+  const id = String(conversationId || peerId || '').trim();
+  if (!id) return;
+  const existing = state.conversationRecords[id];
+  const memberIds = existing?.memberIds || [state.device.id, peerId || id];
+  ensureConversationRecord(id, {
+    kind: existing?.kind || 'direct',
+    title: existing?.title,
+    memberIds,
+    lastMessageAt: Number(event?.createdAt || Date.now()),
+    updatedAt: Date.now(),
+    createdByDeviceId: existing?.createdByDeviceId
+  });
 }
 
 function applyConversationReaction(peerId: string, messageId: string, emoji: string, actorId: string) {
@@ -939,6 +987,7 @@ function applyConversationReaction(peerId: string, messageId: string, emoji: str
 
 function addConversationEvent(peerId: string, event: any) {
   const { notify, ...storedEvent } = event || {};
+  const conversationId = String(storedEvent.conversationId || peerId || '').trim();
   if (storedEvent.direction === 'incoming' && notify !== false) {
     const current = state.devicePreferences[peerId] || {};
     state.devicePreferences[peerId] = {
@@ -946,16 +995,19 @@ function addConversationEvent(peerId: string, event: any) {
       unreadCount: Math.min(999, Number(current.unreadCount || 0) + 1)
     };
   }
-  if (!state.conversations[peerId]) state.conversations[peerId] = [];
-  state.conversations[peerId].push({
-    id: crypto.randomUUID(),
+  if (!state.conversations[conversationId]) state.conversations[conversationId] = [];
+  const nextEvent = {
+    ...storedEvent,
+    id: storedEvent.id || crypto.randomUUID(),
+    conversationId,
     peerId,
-    createdAt: Date.now(),
-    ...storedEvent
-  });
-  if (state.conversations[peerId].length > MAX_CONVERSATION_EVENTS) {
-    state.conversations[peerId].splice(0, state.conversations[peerId].length - MAX_CONVERSATION_EVENTS);
+    createdAt: storedEvent.createdAt || Date.now()
+  };
+  state.conversations[conversationId].push(nextEvent);
+  if (state.conversations[conversationId].length > MAX_CONVERSATION_EVENTS) {
+    state.conversations[conversationId].splice(0, state.conversations[conversationId].length - MAX_CONVERSATION_EVENTS);
   }
+  touchConversationRecord(conversationId, peerId, nextEvent);
   saveState();
   emitState();
   if (storedEvent.direction === 'incoming' && notify !== false) notifyConversationEvent(peerId, storedEvent);
@@ -984,6 +1036,28 @@ async function reactToChatMessage(peerId: string, messageId: string, emoji: stri
     logRuntimeError('chat-react-remote', error);
   }
   return { applied, state: appStateView() };
+}
+
+function createLocalConversation(data: any = {}) {
+  const rawMemberIds = Array.isArray(data.memberIds) ? data.memberIds : Array.isArray(data.peerIds) ? data.peerIds : [];
+  const memberIds = uniqueDeviceIds([state.device.id, ...rawMemberIds]);
+  if (memberIds.length < 2) throw new Error('会话至少需要 2 个成员');
+  const kind = data.kind === 'direct' && memberIds.length === 2 ? 'direct' as const : 'group' as const;
+  const id = kind === 'direct'
+    ? memberIds.find((id) => id !== state.device.id) || memberIds[0]
+    : String(data.id || `conv:${crypto.randomUUID()}`);
+  const record = ensureConversationRecord(id, {
+    kind,
+    title: data.title ? String(data.title).trim().slice(0, 120) : undefined,
+    memberIds,
+    createdByDeviceId: state.device.id,
+    updatedAt: Date.now()
+  });
+  if (!state.conversations[record.id]) state.conversations[record.id] = [];
+  addAudit('conversation.create', kind === 'group' ? `创建群组会话 ${record.title || record.id}` : `创建直接会话 ${record.id}`);
+  saveState();
+  emitState();
+  return record;
 }
 
 function ensureHome() {
@@ -2982,6 +3056,8 @@ async function handleLocalApi(pathname: string, method: string, body: any) {
   if (method === 'POST' && pathname === '/api/settings/webrtc') return setWebRtcConfig(body.webrtc || body.config || body);
   if (method === 'GET' && pathname === '/api/tasks') return state.tasks.slice(0, 200);
   if (method === 'GET' && pathname === '/api/transfers') return state.transfers.slice(0, MAX_TRANSFER_RECORDS);
+  if (method === 'GET' && pathname === '/api/conversations') return Object.values(state.conversationRecords);
+  if (method === 'POST' && pathname === '/api/conversations/create') return createLocalConversation(body);
   if (method === 'POST' && pathname === '/api/transfers/cancel') return cancelTransfer(body.transferId || body.id);
   if (method === 'POST' && pathname === '/api/run') {
     const peerIds = body.all ? [] : (Array.isArray(body.peerIds) ? body.peerIds : []);

@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { DEFAULT_WEBRTC_CONFIG, STATE_SCHEMA_VERSION } = require('../dist/shared/protocol');
-const { migrateState, normalizeManualPeerAddresses, normalizeWebRtcConfig } = require('../dist/shared/state-migration');
+const { migrateState, normalizeConversationRecords, normalizeManualPeerAddresses, normalizeWebRtcConfig } = require('../dist/shared/state-migration');
 
 function defaultState() {
   return {
@@ -19,6 +19,7 @@ function defaultState() {
     blockedDevices: {},
     devicePreferences: {},
     conversations: {},
+    conversationRecords: {},
     tasks: [],
     auditLog: [],
     sharedFolder: '',
@@ -78,14 +79,39 @@ test('migrateState upgrades legacy persisted state without losing usable data', 
   assert.equal(migrated.device.publicKeyHash, 'computed-hash');
   assert.equal(migrated.fileShareEnabled, false);
   assert.equal(migrated.conversations['peer-1'][0].peerId, 'peer-1');
+  assert.equal(migrated.conversations['peer-1'][0].conversationId, 'peer-1');
   assert.equal(migrated.conversations['peer-1'][0].markdown, true);
   assert.equal(migrated.conversations['peer-1'][0].replyTo.id, 'source-1');
+  assert.equal(migrated.conversationRecords['peer-1'].kind, 'direct');
+  assert.deepEqual(migrated.conversationRecords['peer-1'].memberIds, ['device-1', 'peer-1']);
+  assert.equal(migrated.conversationRecords['peer-1'].lastMessageAt, 200);
   assert.deepEqual(migrated.conversations['peer-1'][0].reactions, { ok: ['peer-1'] });
   assert.equal(migrated.tasks[0].status, 'completed');
   assert.equal(migrated.manualPeerAddresses[0].label, '100.64.1.2:46882');
   assert.equal(migrated.manualPeerAddresses[1].status, 'online');
   assert.equal(migrated.transfers[0].status, 'failed');
   assert.deepEqual(migrated.webrtc, DEFAULT_WEBRTC_CONFIG);
+});
+
+test('normalizeConversationRecords preserves group metadata and fills direct metadata', () => {
+  const records = normalizeConversationRecords({
+    'conv:team': {
+      kind: 'group',
+      title: 'Team',
+      memberIds: ['device-1', 'peer-1', 'peer-2'],
+      createdAt: 100,
+      updatedAt: 110
+    }
+  }, {
+    'peer-3': [{ createdAt: 300 }]
+  }, 'device-1');
+
+  assert.equal(records['conv:team'].kind, 'group');
+  assert.equal(records['conv:team'].title, 'Team');
+  assert.deepEqual(records['conv:team'].memberIds, ['device-1', 'peer-1', 'peer-2']);
+  assert.equal(records['peer-3'].kind, 'direct');
+  assert.deepEqual(records['peer-3'].memberIds, ['device-1', 'peer-3']);
+  assert.equal(records['peer-3'].lastMessageAt, 300);
 });
 
 test('migrateState falls back to defaults when device identity is missing', () => {

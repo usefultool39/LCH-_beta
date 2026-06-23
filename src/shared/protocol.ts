@@ -1,6 +1,6 @@
 export const APP_NAME = 'Lan Control Hub';
-export const APP_VERSION = '0.8.0';
-export const STATE_SCHEMA_VERSION = 4;
+export const APP_VERSION = '0.9.0';
+export const STATE_SCHEMA_VERSION = 5;
 export const DISCOVERY_PROTOCOL_VERSION = 1;
 export const CONTROL_PROTOCOL_VERSION = 1;
 export const MIN_SUPPORTED_PROTOCOL_VERSION = 1;
@@ -27,6 +27,7 @@ export const CAPABILITIES = [
   'chat.markdown',
   'chat.reply',
   'chat.reactions',
+  'chat.conversations',
   'files',
   'commands',
   'terminal',
@@ -180,6 +181,7 @@ export interface BlockedDevice {
 
 export interface ConversationEvent {
   id: string;
+  conversationId?: string;
   peerId: string;
   direction: 'incoming' | 'outgoing';
   type: 'text' | 'file';
@@ -201,6 +203,19 @@ export interface ConversationEvent {
   reactions?: Record<string, string[]>;
   editedAt?: number;
   deletedAt?: number;
+}
+
+export type ConversationKind = 'direct' | 'group';
+
+export interface ConversationRecord {
+  id: string;
+  kind: ConversationKind;
+  title?: string;
+  memberIds: string[];
+  createdAt: number;
+  updatedAt: number;
+  lastMessageAt?: number;
+  createdByDeviceId?: string;
 }
 
 export interface TaskRecord {
@@ -303,6 +318,7 @@ export interface AppStateView {
   blockedDevices: Record<string, BlockedDevice>;
   devicePreferences: Record<string, DevicePreference>;
   conversations: Record<string, ConversationEvent[]>;
+  conversationRecords: Record<string, ConversationRecord>;
   tasks: TaskRecord[];
   remoteSessions: RemoteSessionRecord[];
   auditLog: AuditEvent[];

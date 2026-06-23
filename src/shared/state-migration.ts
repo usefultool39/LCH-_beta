@@ -7,6 +7,7 @@ import {
   MAX_TRANSFER_RECORDS,
   STATE_SCHEMA_VERSION,
   type BlockedDevice,
+  type ConversationRecord,
   type DevicePreference,
   type HomeInfo,
   type ManualPeerAddress,
@@ -35,6 +36,7 @@ export type PersistedAppState = {
   blockedDevices: Record<string, BlockedDevice>;
   devicePreferences: Record<string, DevicePreference>;
   conversations: Record<string, any[]>;
+  conversationRecords: Record<string, ConversationRecord>;
   tasks: TaskRecord[];
   auditLog: any[];
   sharedFolder: string;
@@ -218,16 +220,17 @@ function normalizeConversationReactions(value: unknown) {
 export function normalizeConversations(conversations: unknown) {
   if (!isRecord(conversations)) return {};
   const output: Record<string, any[]> = {};
-  for (const [peerId, events] of Object.entries(conversations)) {
+  for (const [conversationId, events] of Object.entries(conversations)) {
     if (!Array.isArray(events)) continue;
-    output[peerId] = events
+    output[conversationId] = events
       .filter((event) => isRecord(event))
       .map((event, index) => {
         const createdAt = Number(event.createdAt || Date.now());
         return {
           ...event,
-          id: String(event.id || `${peerId}:${createdAt}:${index}`),
-          peerId: String(event.peerId || peerId),
+          id: String(event.id || `${conversationId}:${createdAt}:${index}`),
+          conversationId: String(event.conversationId || conversationId),
+          peerId: String(event.peerId || conversationId),
           direction: event.direction === 'outgoing' ? 'outgoing' : 'incoming',
           type: event.type === 'file' ? 'file' : 'text',
           createdAt,
@@ -243,6 +246,58 @@ export function normalizeConversations(conversations: unknown) {
   return output;
 }
 
+function uniqueIds(values: unknown[] = []) {
+  return Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean)));
+}
+
+function lastMessageAt(events: any[] = []) {
+  return events.reduce((latest, event) => Math.max(latest, Number(event?.createdAt || 0)), 0) || undefined;
+}
+
+function normalizeConversationRecord(value: unknown, fallbackId: string, localDeviceId: string, events: any[] = []): ConversationRecord | null {
+  if (!fallbackId) return null;
+  const record = isRecord(value) ? value : {};
+  const id = String(record.id || fallbackId);
+  const kind = record.kind === 'group' ? 'group' as const : 'direct' as const;
+  const fallbackMembers = kind === 'direct' ? [localDeviceId, id] : [localDeviceId];
+  const memberIds = uniqueIds(Array.isArray(record.memberIds) ? record.memberIds : fallbackMembers);
+  const messageAt = lastMessageAt(events);
+  const createdAt = Number(record.createdAt || messageAt || Date.now());
+  return {
+    id,
+    kind,
+    title: record.title ? String(record.title).slice(0, 120) : undefined,
+    memberIds,
+    createdAt,
+    updatedAt: Number(record.updatedAt || messageAt || createdAt),
+    lastMessageAt: record.lastMessageAt ? Number(record.lastMessageAt) : messageAt,
+    createdByDeviceId: record.createdByDeviceId ? String(record.createdByDeviceId) : undefined
+  };
+}
+
+export function normalizeConversationRecords(records: unknown, conversations: Record<string, any[]> = {}, localDeviceId = '') {
+  const output: Record<string, ConversationRecord> = {};
+  if (isRecord(records)) {
+    for (const [id, record] of Object.entries(records)) {
+      const normalized = normalizeConversationRecord(record, id, localDeviceId, conversations[id] || []);
+      if (normalized) output[normalized.id] = normalized;
+    }
+  }
+  for (const [id, events] of Object.entries(conversations)) {
+    if (output[id]) {
+      const messageAt = lastMessageAt(events);
+      if (messageAt && (!output[id].lastMessageAt || output[id].lastMessageAt < messageAt)) {
+        output[id].lastMessageAt = messageAt;
+        output[id].updatedAt = Math.max(output[id].updatedAt, messageAt);
+      }
+      continue;
+    }
+    const normalized = normalizeConversationRecord(undefined, id, localDeviceId, events);
+    if (normalized) output[id] = normalized;
+  }
+  return output;
+}
+
 export function migrateState(raw: unknown, defaults: PersistedAppState, options: MigrationOptions = {}): PersistedAppState {
   const parsed = isRecord(raw) ? raw : {};
   const device = isRecord(parsed.device) ? parsed.device : {};
@@ -251,13 +306,15 @@ export function migrateState(raw: unknown, defaults: PersistedAppState, options:
   const publicKey = String(device.publicKey || '');
   const publicKeyHash = options.publicKeyHash || defaultPublicKeyHash;
   const manualPeerNormalizer = options.normalizeManualPeerAddresses || normalizeManualPeerAddresses;
+  const conversations = normalizeConversations(parsed.conversations);
+  const deviceId = String(device.id);
 
   return {
     ...defaults,
     home: isRecord(parsed.home) ? parsed.home as HomeInfo : null,
     stateVersion: STATE_SCHEMA_VERSION,
     device: {
-      id: String(device.id),
+      id: deviceId,
       name: String(device.name || defaults.device.name),
       platform: (device.platform || defaults.device.platform) as NodeJS.Platform,
       publicKey,
@@ -267,7 +324,8 @@ export function migrateState(raw: unknown, defaults: PersistedAppState, options:
     trustedDevices: isRecord(parsed.trustedDevices) ? parsed.trustedDevices as Record<string, TrustedDevice> : {},
     blockedDevices: isRecord(parsed.blockedDevices) ? parsed.blockedDevices as Record<string, BlockedDevice> : {},
     devicePreferences: isRecord(parsed.devicePreferences) ? parsed.devicePreferences as Record<string, DevicePreference> : {},
-    conversations: normalizeConversations(parsed.conversations),
+    conversations,
+    conversationRecords: normalizeConversationRecords(parsed.conversationRecords, conversations, deviceId),
     tasks: normalizeTaskRecords(Array.isArray(parsed.tasks) ? parsed.tasks : []),
     auditLog: Array.isArray(parsed.auditLog) ? parsed.auditLog.slice(-MAX_AUDIT_EVENTS) : [],
     sharedFolder: parsed.sharedFolder ? String(parsed.sharedFolder) : '',

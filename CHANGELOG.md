@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.9.0
+
+- Add conversation metadata records beside the existing conversation event store as the foundation for future group chat.
+- Migrate legacy `Record<peerId, events[]>` chats into direct conversation records without changing their existing keys.
+- Add optional `conversationId` on chat events and keep direct chat IDs equal to peer IDs for backward compatibility.
+- Expose Local API endpoints to list conversation records and create local direct/group conversation metadata for later UI work.
+
 ## v0.8.0
 
 - Add shared message IDs for new chat messages so reply references and reactions can stay aligned across devices.
