@@ -1,6 +1,6 @@
 export const APP_NAME = 'Lan Control Hub';
-export const APP_VERSION = '0.6.0';
-export const STATE_SCHEMA_VERSION = 2;
+export const APP_VERSION = '0.7.0';
+export const STATE_SCHEMA_VERSION = 3;
 export const DISCOVERY_PROTOCOL_VERSION = 1;
 export const CONTROL_PROTOCOL_VERSION = 1;
 export const MIN_SUPPORTED_PROTOCOL_VERSION = 1;
@@ -29,6 +29,7 @@ export const CAPABILITIES = [
   'terminal',
   'terminal.pty',
   'screen.view',
+  'screen.webrtc.ice',
   'remote.input',
   'remote.clipboard',
   'remote.screenshot',
@@ -69,6 +70,24 @@ export interface DevicePreference {
 }
 
 export type ManualPeerStatus = 'unknown' | 'online' | 'offline' | 'home-mismatch' | 'invalid' | 'self';
+
+export type WebRtcIceTransportPolicy = 'all' | 'relay';
+
+export interface WebRtcIceServer {
+  urls: string[];
+  username?: string;
+  credential?: string;
+}
+
+export interface WebRtcConfig {
+  iceServers: WebRtcIceServer[];
+  iceTransportPolicy: WebRtcIceTransportPolicy;
+}
+
+export const DEFAULT_WEBRTC_CONFIG: WebRtcConfig = {
+  iceServers: [],
+  iceTransportPolicy: 'all'
+};
 
 export interface ManualPeerAddress {
   address: string;
@@ -277,6 +296,7 @@ export interface AppStateView {
   manualPeerAddresses: ManualPeerAddress[];
   transfers: TransferRecord[];
   networkInfo: NetworkInfo;
+  webrtc: WebRtcConfig;
 }
 
 export interface ControlPayload<T = unknown> {

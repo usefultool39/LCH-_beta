@@ -17,6 +17,7 @@ const api = {
   updateDevicePreference: (peerId: string, patch: unknown) => ipcRenderer.invoke('lch:update-device-preference', peerId, patch),
   setFileSharing: (enabled: boolean) => ipcRenderer.invoke('lch:set-file-sharing', enabled),
   setAutoTrust: (enabled: boolean) => ipcRenderer.invoke('lch:set-auto-trust', enabled),
+  setWebRtcConfig: (config: unknown) => ipcRenderer.invoke('lch:set-webrtc-config', config),
   connectManualPeer: (address: string) => ipcRenderer.invoke('lch:connect-manual-peer', address),
   removeManualPeer: (address: string) => ipcRenderer.invoke('lch:remove-manual-peer', address),
   refreshManualPeers: () => ipcRenderer.invoke('lch:refresh-manual-peers'),

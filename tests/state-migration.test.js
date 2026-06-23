@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { STATE_SCHEMA_VERSION } = require('../dist/shared/protocol');
-const { migrateState, normalizeManualPeerAddresses } = require('../dist/shared/state-migration');
+const { DEFAULT_WEBRTC_CONFIG, STATE_SCHEMA_VERSION } = require('../dist/shared/protocol');
+const { migrateState, normalizeManualPeerAddresses, normalizeWebRtcConfig } = require('../dist/shared/state-migration');
 
 function defaultState() {
   return {
@@ -26,7 +26,8 @@ function defaultState() {
     autoTrustDevices: false,
     localApiToken: 'default-token',
     manualPeerAddresses: [],
-    transfers: []
+    transfers: [],
+    webrtc: DEFAULT_WEBRTC_CONFIG
   };
 }
 
@@ -80,6 +81,7 @@ test('migrateState upgrades legacy persisted state without losing usable data', 
   assert.equal(migrated.manualPeerAddresses[0].label, '100.64.1.2:46882');
   assert.equal(migrated.manualPeerAddresses[1].status, 'online');
   assert.equal(migrated.transfers[0].status, 'failed');
+  assert.deepEqual(migrated.webrtc, DEFAULT_WEBRTC_CONFIG);
 });
 
 test('migrateState falls back to defaults when device identity is missing', () => {
@@ -103,4 +105,21 @@ test('normalizeManualPeerAddresses removes invalid and duplicate addresses', () 
       peerName: undefined
     }]
   );
+});
+
+test('normalizeWebRtcConfig keeps valid ICE servers and drops unsafe entries', () => {
+  assert.deepEqual(normalizeWebRtcConfig({
+    iceTransportPolicy: 'relay',
+    iceServers: [
+      { urls: ['stun:stun.example.com:3478', 'https://example.com'], username: 'user', credential: 'secret' },
+      { urls: 'turn:turn.example.com:3478?transport=tcp turn:turn.example.com:3478?transport=tcp' },
+      { urls: 'ftp://example.com' }
+    ]
+  }), {
+    iceTransportPolicy: 'relay',
+    iceServers: [
+      { urls: ['stun:stun.example.com:3478'], username: 'user', credential: 'secret' },
+      { urls: ['turn:turn.example.com:3478?transport=tcp'] }
+    ]
+  });
 });

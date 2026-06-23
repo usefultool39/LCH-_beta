@@ -1,4 +1,4 @@
-import type { AppStateView, DevicePreference, FirewallStatus, RemoteInputEvent, RemoteOpenResult, RemoteScreenshotResult, RemoteSessionRecord, ScreenSignalEvent, SharedFileToken, TerminalOpenResult, TerminalOutputEvent, TransferRecord } from '../shared/protocol';
+import type { AppStateView, DevicePreference, FirewallStatus, RemoteInputEvent, RemoteOpenResult, RemoteScreenshotResult, RemoteSessionRecord, ScreenSignalEvent, SharedFileToken, TerminalOpenResult, TerminalOutputEvent, TransferRecord, WebRtcConfig } from '../shared/protocol';
 
 declare global {
   interface Window {
@@ -19,6 +19,7 @@ declare global {
       updateDevicePreference: (peerId: string, patch: Partial<DevicePreference>) => Promise<AppStateView>;
       setFileSharing: (enabled: boolean) => Promise<AppStateView>;
       setAutoTrust: (enabled: boolean) => Promise<AppStateView>;
+      setWebRtcConfig: (config: WebRtcConfig) => Promise<AppStateView>;
       connectManualPeer: (address: string) => Promise<AppStateView>;
       removeManualPeer: (address: string) => Promise<AppStateView>;
       refreshManualPeers: () => Promise<AppStateView>;

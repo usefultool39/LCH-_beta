@@ -20,6 +20,7 @@ import {
   DEFAULT_CONTROL_PORT,
   DEFAULT_LOCAL_API_PORT,
   DEFAULT_WEB_PORT,
+  DEFAULT_WEBRTC_CONFIG,
   DevicePreference,
   DISCOVERY_INTERVAL_MS,
   DISCOVERY_PORT,
@@ -51,6 +52,7 @@ import {
   TerminalBackend,
   TerminalOpenResult,
   TransferRecord,
+  WebRtcConfig,
   isDiscoveryPacket,
   unsupportedControlResponse
 } from '../shared/protocol';
@@ -58,7 +60,7 @@ import { decodeFilePayload } from '../shared/file-transfer';
 import { cleanSharedPath, resolveInsideRoot } from '../shared/shared-paths';
 import { ControlReplayGuard } from '../shared/security';
 import { blockedDeviceFromTrust, isDeviceBlocked, isDeviceTrusted, trustedDeviceFromPeer } from '../shared/trust';
-import { migrateState, type PersistedAppState } from '../shared/state-migration';
+import { migrateState, normalizeWebRtcConfig, type PersistedAppState } from '../shared/state-migration';
 
 type RuntimePeer = PeerInfo;
 
@@ -113,8 +115,8 @@ type SharedUploadToken = SharedFileToken & {
 const DEFAULT_HOME_NAME = '我的局域网';
 const DOWNLOAD_FOLDER_NAME = 'LanControlHub';
 const HEADLESS = process.argv.includes('--headless') || process.env.LCH_HEADLESS === '1';
-const RELEASES_URL = 'https://github.com/usefultool39/LCH-_beta/releases/latest';
-const LATEST_RELEASE_API_URL = 'https://api.github.com/repos/usefultool39/LCH-_beta/releases/latest';
+const RELEASES_URL = 'https://github.com/usefultool39/LCH-beta/releases/latest';
+const LATEST_RELEASE_API_URL = 'https://api.github.com/repos/usefultool39/LCH-beta/releases/latest';
 
 let mainWindow: BrowserWindow | null = null;
 let state: AppState;
@@ -399,7 +401,8 @@ function createDefaultState(): AppState {
     autoTrustDevices: false,
     localApiToken: base64url(crypto.randomBytes(32)),
     manualPeerAddresses: [],
-    transfers: []
+    transfers: [],
+    webrtc: normalizeWebRtcConfig(DEFAULT_WEBRTC_CONFIG)
   };
 }
 
@@ -693,7 +696,8 @@ function appStateView() {
     autoTrustDevices: state.autoTrustDevices,
     manualPeerAddresses: state.manualPeerAddresses,
     transfers: state.transfers.slice(0, MAX_TRANSFER_RECORDS),
-    networkInfo: networkInfo()
+    networkInfo: networkInfo(),
+    webrtc: state.webrtc
   };
 }
 
@@ -775,6 +779,16 @@ function setFileSharing(enabled: boolean) {
 function setAutoTrustDevices(enabled: boolean) {
   state.autoTrustDevices = Boolean(enabled);
   addAudit('device.autoTrust', state.autoTrustDevices ? '开启自动信任新设备' : '关闭自动信任新设备');
+  saveState();
+  emitState();
+  return appStateView();
+}
+
+function setWebRtcConfig(config: Partial<WebRtcConfig>) {
+  state.webrtc = normalizeWebRtcConfig(config, DEFAULT_WEBRTC_CONFIG);
+  addAudit('settings.webrtc', state.webrtc.iceServers.length
+    ? `更新 WebRTC ICE 配置：${state.webrtc.iceServers.length} 个服务器`
+    : '清空 WebRTC ICE 配置，使用局域网直连');
   saveState();
   emitState();
   return appStateView();
@@ -2884,6 +2898,7 @@ async function handleLocalApi(pathname: string, method: string, body: any) {
   if (method === 'POST' && pathname === '/api/devices/revoke') return revokeTrustedDevice(body.peerId);
   if (method === 'POST' && pathname === '/api/settings/file-sharing') return setFileSharing(body.enabled !== false);
   if (method === 'POST' && pathname === '/api/settings/auto-trust') return setAutoTrustDevices(body.enabled !== false);
+  if (method === 'POST' && pathname === '/api/settings/webrtc') return setWebRtcConfig(body.webrtc || body.config || body);
   if (method === 'GET' && pathname === '/api/tasks') return state.tasks.slice(0, 200);
   if (method === 'GET' && pathname === '/api/transfers') return state.transfers.slice(0, MAX_TRANSFER_RECORDS);
   if (method === 'POST' && pathname === '/api/transfers/cancel') return cancelTransfer(body.transferId || body.id);
@@ -3215,6 +3230,7 @@ function registerIpc() {
   ipcMain.handle('lch:update-device-preference', (_event, peerId, patch) => updateDevicePreference(peerId, patch || {}));
   ipcMain.handle('lch:set-file-sharing', (_event, enabled) => setFileSharing(Boolean(enabled)));
   ipcMain.handle('lch:set-auto-trust', (_event, enabled) => setAutoTrustDevices(Boolean(enabled)));
+  ipcMain.handle('lch:set-webrtc-config', (_event, config) => setWebRtcConfig(config || {}));
   ipcMain.handle('lch:connect-manual-peer', (_event, address) => connectManualPeer(address));
   ipcMain.handle('lch:remove-manual-peer', (_event, address) => removeManualPeer(address));
   ipcMain.handle('lch:refresh-manual-peers', async () => {

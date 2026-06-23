@@ -4,6 +4,7 @@ const {
   CAPABILITIES,
   CAPABILITY_VERSIONS,
   CONTROL_PROTOCOL_VERSION,
+  DEFAULT_WEBRTC_CONFIG,
   MIN_SUPPORTED_PROTOCOL_VERSION,
   isProtocolCompatible,
   unsupportedControlResponse
@@ -11,9 +12,17 @@ const {
 
 test('capability versions are declared for every advertised capability', () => {
   assert.equal(CAPABILITIES.includes('terminal.pty'), true);
+  assert.equal(CAPABILITIES.includes('screen.webrtc.ice'), true);
   for (const capability of CAPABILITIES) {
     assert.equal(CAPABILITY_VERSIONS[capability], 1);
   }
+});
+
+test('default WebRTC config preserves LAN direct connection behavior', () => {
+  assert.deepEqual(DEFAULT_WEBRTC_CONFIG, {
+    iceServers: [],
+    iceTransportPolicy: 'all'
+  });
 });
 
 test('unsupportedControlResponse includes compatibility metadata', () => {

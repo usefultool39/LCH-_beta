@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.7.0
+
+- Add persisted WebRTC ICE configuration with optional STUN/TURN servers and `all`/`relay` transport policy.
+- Keep the default ICE server list empty so LAN screen sharing and remote control continue to prefer direct local connections.
+- Apply the configured ICE settings to both the main remote-control view and standalone remote-control windows.
+- Add state migration and tests for WebRTC config normalization, and fix the in-app latest-release check to use the current GitHub repository.
+
 ## v0.6.0
 
 - Upgrade remote terminals with an optional node-pty-compatible backend and xterm renderer for ANSI output, cursor control, raw keyboard input, and terminal resizing.

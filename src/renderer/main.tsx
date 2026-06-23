@@ -25,6 +25,7 @@ import {
   Eye,
   EyeOff,
   Play,
+  Plus,
   Power,
   RefreshCw,
   ScreenShare,
@@ -43,8 +44,8 @@ import {
   Music2,
   FileText
 } from 'lucide-react';
-import { APP_VERSION, MAX_FILE_BYTES } from '../shared/protocol';
-import type { AppStateView, DevicePreference, FirewallStatus, PeerInfo, RemoteInputEvent, RemoteOpenResult, RemoteSessionRecord, SharedFileToken, SharedFolderListing, TaskRecord, TerminalOutputEvent, TransferRecord } from '../shared/protocol';
+import { APP_VERSION, DEFAULT_WEBRTC_CONFIG, MAX_FILE_BYTES } from '../shared/protocol';
+import type { AppStateView, DevicePreference, FirewallStatus, PeerInfo, RemoteInputEvent, RemoteOpenResult, RemoteSessionRecord, SharedFileToken, SharedFolderListing, TaskRecord, TerminalOutputEvent, TransferRecord, WebRtcConfig, WebRtcIceTransportPolicy } from '../shared/protocol';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
 
@@ -85,6 +86,55 @@ type RemoteNotice = {
 };
 
 type UpdateInfo = Awaited<ReturnType<typeof api.checkUpdates>>;
+type IceServerDraft = {
+  id: string;
+  urls: string;
+  username: string;
+  credential: string;
+};
+
+function toRtcConfiguration(config: WebRtcConfig = DEFAULT_WEBRTC_CONFIG): RTCConfiguration {
+  return {
+    iceServers: (config.iceServers || []).map((server) => ({
+      urls: server.urls,
+      ...(server.username ? { username: server.username } : {}),
+      ...(server.credential ? { credential: server.credential } : {})
+    })),
+    iceTransportPolicy: config.iceTransportPolicy || 'all'
+  };
+}
+
+function draftId() {
+  return crypto.randomUUID();
+}
+
+function webRtcDraftsFromConfig(config: WebRtcConfig = DEFAULT_WEBRTC_CONFIG): IceServerDraft[] {
+  const drafts = (config.iceServers || []).map((server) => ({
+    id: draftId(),
+    urls: server.urls.join(', '),
+    username: server.username || '',
+    credential: server.credential || ''
+  }));
+  return drafts.length ? drafts : [{ id: draftId(), urls: '', username: '', credential: '' }];
+}
+
+function webRtcConfigFromDrafts(iceTransportPolicy: WebRtcIceTransportPolicy, drafts: IceServerDraft[]): WebRtcConfig {
+  return {
+    iceTransportPolicy,
+    iceServers: drafts
+      .map((draft) => ({
+        urls: draft.urls.split(/[\s,]+/).map((url) => url.trim()).filter(Boolean),
+        username: draft.username.trim(),
+        credential: draft.credential.trim()
+      }))
+      .filter((server) => server.urls.length)
+      .map((server) => ({
+        urls: server.urls,
+        ...(server.username ? { username: server.username } : {}),
+        ...(server.credential ? { credential: server.credential } : {})
+      }))
+  };
+}
 
 function formatBytes(size = 0) {
   if (size < 1024) return `${size} B`;
@@ -1046,6 +1096,7 @@ function SettingsView({
   state,
   onUpdateName,
   onSetAutoTrust,
+  onSetWebRtcConfig,
   onConnectManualPeer,
   onRemoveManualPeer,
   onRefreshManualPeers,
@@ -1055,6 +1106,7 @@ function SettingsView({
   state: AppStateView;
   onUpdateName: (name: string) => void;
   onSetAutoTrust: (enabled: boolean) => void;
+  onSetWebRtcConfig: (config: WebRtcConfig) => Promise<unknown> | void;
   onConnectManualPeer: (address: string) => Promise<unknown> | void;
   onRemoveManualPeer: (address: string) => Promise<unknown> | void;
   onRefreshManualPeers: () => Promise<unknown> | void;
@@ -1071,10 +1123,19 @@ function SettingsView({
   const [firewallBusy, setFirewallBusy] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
+  const [icePolicy, setIcePolicy] = useState<WebRtcIceTransportPolicy>(state.webrtc?.iceTransportPolicy || 'all');
+  const [iceDrafts, setIceDrafts] = useState<IceServerDraft[]>(() => webRtcDraftsFromConfig(state.webrtc));
+  const [iceBusy, setIceBusy] = useState(false);
+  const [iceSaved, setIceSaved] = useState(false);
+  const iceConfigSignature = JSON.stringify(state.webrtc || DEFAULT_WEBRTC_CONFIG);
   const trustedDevices = Object.values(state.trustedDevices)
     .sort((a, b) => a.name.localeCompare(b.name));
   const pendingPeers = state.peers.filter((peer) => !peer.trusted);
   useEffect(() => setName(state.device.name), [state.device.name]);
+  useEffect(() => {
+    setIcePolicy(state.webrtc?.iceTransportPolicy || 'all');
+    setIceDrafts(webRtcDraftsFromConfig(state.webrtc));
+  }, [iceConfigSignature]);
   useEffect(() => {
     api.getFirewallStatus().then(setFirewall).catch(() => {});
   }, []);
@@ -1103,6 +1164,27 @@ function SettingsView({
       setManualAddress('');
     } finally {
       setManualBusy(false);
+    }
+  }
+  function updateIceDraft(id: string, patch: Partial<IceServerDraft>) {
+    setIceSaved(false);
+    setIceDrafts((current) => current.map((draft) => draft.id === id ? { ...draft, ...patch } : draft));
+  }
+  function removeIceDraft(id: string) {
+    setIceSaved(false);
+    setIceDrafts((current) => {
+      const next = current.filter((draft) => draft.id !== id);
+      return next.length ? next : [{ id: draftId(), urls: '', username: '', credential: '' }];
+    });
+  }
+  async function saveIceConfig() {
+    setIceBusy(true);
+    try {
+      await onSetWebRtcConfig(webRtcConfigFromDrafts(icePolicy, iceDrafts));
+      setIceSaved(true);
+      window.setTimeout(() => setIceSaved(false), 1400);
+    } finally {
+      setIceBusy(false);
     }
   }
   return (
@@ -1178,6 +1260,58 @@ function SettingsView({
               ))}
             </div>
           ) : <p>还没有手动添加的远程地址。</p>}
+        </section>
+        <section className="panel settingsWebrtc">
+          <div className="panelHeader">
+            <div>
+              <h2>WebRTC 连接</h2>
+              <p>默认不配置 ICE 服务器，继续优先使用局域网直连。跨网或公网虚拟专网不稳定时，再添加 STUN/TURN。</p>
+            </div>
+            <span className={`statusPill ${state.webrtc?.iceServers.length ? 'permission' : 'online'}`}>
+              {state.webrtc?.iceServers.length ? `${state.webrtc.iceServers.length} 个 ICE` : '直连'}
+            </span>
+          </div>
+          <div className="segmentedControl" role="group" aria-label="ICE 连接策略">
+            <button type="button" className={icePolicy === 'all' ? 'active' : ''} onClick={() => { setIceSaved(false); setIcePolicy('all'); }}>直连优先</button>
+            <button type="button" className={icePolicy === 'relay' ? 'active' : ''} onClick={() => { setIceSaved(false); setIcePolicy('relay'); }}>仅中继</button>
+          </div>
+          <div className="iceServerRows">
+            {iceDrafts.map((draft, index) => (
+              <div className="iceServerRow" key={draft.id}>
+                <input
+                  aria-label={`ICE URL ${index + 1}`}
+                  value={draft.urls}
+                  onChange={(event) => updateIceDraft(draft.id, { urls: event.target.value })}
+                  placeholder="stun:stun.example.com:3478 或 turn:turn.example.com:3478"
+                />
+                <input
+                  aria-label={`ICE 用户名 ${index + 1}`}
+                  value={draft.username}
+                  onChange={(event) => updateIceDraft(draft.id, { username: event.target.value })}
+                  placeholder="用户名"
+                />
+                <input
+                  aria-label={`ICE 凭据 ${index + 1}`}
+                  type="password"
+                  value={draft.credential}
+                  onChange={(event) => updateIceDraft(draft.id, { credential: event.target.value })}
+                  placeholder="凭据"
+                />
+                <button className="secondary iconButton" title="删除 ICE 服务器" onClick={() => removeIceDraft(draft.id)}>
+                  <Trash2 size={15} />
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="rowActions">
+            <button className="secondary" onClick={() => { setIceSaved(false); setIceDrafts((current) => [...current, { id: draftId(), urls: '', username: '', credential: '' }]); }}>
+              <Plus size={16} /> 添加服务器
+            </button>
+            <button className="primary" disabled={iceBusy} onClick={saveIceConfig}>
+              <ShieldCheck size={16} /> {iceBusy ? '保存中' : iceSaved ? '已保存' : '保存连接配置'}
+            </button>
+          </div>
+          <p className="settingsHint">配置只保存在本机，不会通过设备发现广播给其他设备；保存后仅影响新发起的屏幕共享和远程控制连接。</p>
         </section>
         </> : null}
         {settingsTab === 'trust' ? <>
@@ -1680,7 +1814,8 @@ function RemoteWindowApp() {
 
     async function start() {
       updateSession({ status: 'opening' });
-      const pc = new RTCPeerConnection({ iceServers: [] });
+      const appState = await api.getState().catch(() => null);
+      const pc = new RTCPeerConnection(toRtcConfiguration(appState?.webrtc));
       peerConnection.current = pc;
       pc.onicecandidate = (event) => {
         if (event.candidate) {
@@ -1934,7 +2069,7 @@ function App() {
     const key = `${peerId}:${sessionId}:${sharing ? 'share' : 'view'}`;
     const existing = peerConnections.current.get(key);
     if (existing) return existing;
-    const pc = new RTCPeerConnection({ iceServers: [] });
+    const pc = new RTCPeerConnection(toRtcConfiguration(state?.webrtc));
     pc.onicecandidate = (event) => {
       if (event.candidate) {
         api.sendScreenSignal(peerId, sessionId, { kind: 'candidate', candidate: event.candidate.toJSON() }).catch(() => {});
@@ -2100,6 +2235,7 @@ function App() {
           state={state}
           onUpdateName={(name) => run(() => api.updateName(name))}
           onSetAutoTrust={(enabled) => run(() => api.setAutoTrust(enabled))}
+          onSetWebRtcConfig={(config) => run(() => api.setWebRtcConfig(config))}
           onConnectManualPeer={(address) => run(() => api.connectManualPeer(address))}
           onRemoveManualPeer={(address) => run(() => api.removeManualPeer(address))}
           onRefreshManualPeers={() => run(() => api.refreshManualPeers())}

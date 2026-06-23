@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import {
   DEFAULT_WEB_PORT,
+  DEFAULT_WEBRTC_CONFIG,
   MAX_AUDIT_EVENTS,
   MAX_CONVERSATION_EVENTS,
   MAX_TRANSFER_RECORDS,
@@ -11,7 +12,10 @@ import {
   type ManualPeerAddress,
   type TaskRecord,
   type TransferRecord,
-  type TrustedDevice
+  type TrustedDevice,
+  type WebRtcConfig,
+  type WebRtcIceServer,
+  type WebRtcIceTransportPolicy
 } from './protocol';
 
 export type PersistedDeviceIdentity = {
@@ -39,6 +43,7 @@ export type PersistedAppState = {
   localApiToken: string;
   manualPeerAddresses: ManualPeerAddress[];
   transfers: TransferRecord[];
+  webrtc: WebRtcConfig;
 };
 
 type MigrationOptions = {
@@ -52,6 +57,57 @@ function isRecord(value: unknown): value is Record<string, any> {
 
 function defaultPublicKeyHash(publicKey: string) {
   return crypto.createHash('sha256').update(publicKey).digest('hex').slice(0, 16);
+}
+
+function cloneWebRtcConfig(config: WebRtcConfig = DEFAULT_WEBRTC_CONFIG): WebRtcConfig {
+  return {
+    iceServers: config.iceServers.map((server) => ({
+      urls: [...server.urls],
+      username: server.username,
+      credential: server.credential
+    })),
+    iceTransportPolicy: config.iceTransportPolicy
+  };
+}
+
+function normalizeIceUrls(value: unknown) {
+  const rawUrls = Array.isArray(value) ? value : [value];
+  const urls: string[] = [];
+  const seen = new Set<string>();
+  for (const item of rawUrls) {
+    for (const raw of String(item || '').split(/[\s,]+/)) {
+      const url = raw.trim();
+      if (!/^(stun|stuns|turn|turns):/i.test(url) || seen.has(url)) continue;
+      seen.add(url);
+      urls.push(url.slice(0, 500));
+      if (urls.length >= 8) return urls;
+    }
+  }
+  return urls;
+}
+
+function normalizeIceServer(value: unknown): WebRtcIceServer | null {
+  if (!isRecord(value)) return null;
+  const urls = normalizeIceUrls(value.urls ?? value.url);
+  if (!urls.length) return null;
+  const username = value.username ? String(value.username).slice(0, 200) : '';
+  const credential = value.credential ? String(value.credential).slice(0, 500) : '';
+  return {
+    urls,
+    ...(username ? { username } : {}),
+    ...(credential ? { credential } : {})
+  };
+}
+
+export function normalizeWebRtcConfig(value: unknown, defaults: WebRtcConfig = DEFAULT_WEBRTC_CONFIG): WebRtcConfig {
+  if (!isRecord(value)) return cloneWebRtcConfig(defaults);
+  const defaultPolicy: WebRtcIceTransportPolicy = defaults.iceTransportPolicy === 'relay' ? 'relay' : 'all';
+  const iceTransportPolicy: WebRtcIceTransportPolicy = value.iceTransportPolicy === 'relay' ? 'relay' : defaultPolicy;
+  const iceServers = (Array.isArray(value.iceServers) ? value.iceServers : [])
+    .map(normalizeIceServer)
+    .filter((server): server is WebRtcIceServer => Boolean(server))
+    .slice(0, 20);
+  return { iceServers, iceTransportPolicy };
 }
 
 function normalizeManualPeerAddress(value: any): ManualPeerAddress | null {
@@ -190,6 +246,7 @@ export function migrateState(raw: unknown, defaults: PersistedAppState, options:
     autoTrustDevices: Boolean(parsed.autoTrustDevices),
     localApiToken: parsed.localApiToken ? String(parsed.localApiToken) : defaults.localApiToken,
     manualPeerAddresses: manualPeerNormalizer(Array.isArray(parsed.manualPeerAddresses) ? parsed.manualPeerAddresses : []),
-    transfers: normalizeTransferRecords(Array.isArray(parsed.transfers) ? parsed.transfers : [])
+    transfers: normalizeTransferRecords(Array.isArray(parsed.transfers) ? parsed.transfers : []),
+    webrtc: normalizeWebRtcConfig(parsed.webrtc, defaults.webrtc)
   };
 }

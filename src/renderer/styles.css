@@ -450,6 +450,11 @@ textarea:focus {
   font-weight: 700;
 }
 
+.iconButton {
+  width: 36px;
+  padding: 0;
+}
+
 .primary {
   background: #2563eb;
   color: white;
@@ -1270,6 +1275,49 @@ textarea:focus {
   font-size: 12px;
 }
 
+.segmentedControl {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  margin-top: 12px;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  padding: 4px;
+  background: #f8fafc;
+}
+
+.segmentedControl button {
+  min-height: 32px;
+  border: 0;
+  border-radius: 6px;
+  padding: 0 12px;
+  color: #475569;
+  background: transparent;
+  font-weight: 800;
+}
+
+.segmentedControl button.active {
+  color: #1d4ed8;
+  background: white;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+}
+
+.iceServerRows {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.iceServerRow {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.6fr) minmax(96px, 0.7fr) minmax(96px, 0.7fr) 36px;
+  gap: 8px;
+}
+
+.settingsHint {
+  line-height: 1.55;
+}
+
 .taskList {
   display: grid;
   gap: 12px;
@@ -1451,6 +1499,7 @@ textarea:focus {
 }
 
 .settingsJoin,
+.settingsWebrtc,
 .settingsTrust,
 .settingsTrusted {
   grid-column: 2;
@@ -1979,6 +2028,7 @@ textarea:focus {
   }
 
   .settingsJoin,
+  .settingsWebrtc,
   .settingsTrust,
   .settingsTrusted,
   .settingsIdentity,
@@ -2039,6 +2089,14 @@ textarea:focus {
   .workspaceHeader {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .iceServerRow {
+    grid-template-columns: 1fr;
+  }
+
+  .iconButton {
+    width: 100%;
   }
 
   .headerStats {
