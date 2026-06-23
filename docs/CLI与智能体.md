@@ -101,7 +101,7 @@ lch remote close --device 远端测试机 --session <sessionId>
 lch terminal 远端测试机
 ```
 
-终端适合连续执行多条命令。自动化脚本更推荐 `lch run`，结果更容易解析。
+远端支持 PTY 时，CLI 会进入 raw TTY 模式并直接传递按键；使用 `Ctrl+]` 关闭本地终端会话。远端只能使用基础 spawn fallback 时，CLI 会保留按行输入模式，使用 `Ctrl+C` 关闭。自动化脚本更推荐 `lch run`，结果更容易解析。
 
 ## 7. 文件
 
@@ -158,4 +158,3 @@ devices -> observe -> click/type/hotkey/clipboard -> run -> tasks
 ```
 
 建议智能体每次关键 GUI 操作后都重新 `observe` 一次，确认界面状态，不要盲点。
-

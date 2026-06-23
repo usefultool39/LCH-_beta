@@ -1,4 +1,4 @@
-import type { AppStateView, DevicePreference, FirewallStatus, RemoteInputEvent, RemoteOpenResult, RemoteScreenshotResult, RemoteSessionRecord, ScreenSignalEvent, SharedFileToken, TerminalOutputEvent, TransferRecord } from '../shared/protocol';
+import type { AppStateView, DevicePreference, FirewallStatus, RemoteInputEvent, RemoteOpenResult, RemoteScreenshotResult, RemoteSessionRecord, ScreenSignalEvent, SharedFileToken, TerminalOpenResult, TerminalOutputEvent, TransferRecord } from '../shared/protocol';
 
 declare global {
   interface Window {
@@ -35,8 +35,9 @@ declare global {
       getFilePath: (file: File) => string;
       uploadSharedFileStream: (peerId: string, relativePath: string, localPath: string) => Promise<unknown>;
       runCommand: (peerIds: string[], command: string, cwd?: string) => Promise<{ taskIds: string[] }>;
-      openTerminal: (peerId: string) => Promise<{ sessionId: string; terminalId: string; shell: string }>;
+      openTerminal: (peerId: string, size?: { cols?: number; rows?: number }) => Promise<TerminalOpenResult>;
       terminalInput: (peerId: string, terminalId: string, input: string) => Promise<unknown>;
+      terminalResize: (peerId: string, terminalId: string, cols: number, rows: number) => Promise<unknown>;
       terminalClose: (peerId: string, terminalId: string) => Promise<unknown>;
       requestScreen: (peerId: string, sessionId: string) => Promise<unknown>;
       sendScreenSignal: (peerId: string, sessionId: string, signal: unknown) => Promise<unknown>;

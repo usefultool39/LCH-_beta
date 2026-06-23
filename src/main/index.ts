@@ -4,6 +4,7 @@ import dgram from 'node:dgram';
 import fs from 'node:fs';
 import https from 'node:https';
 import http from 'node:http';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
@@ -47,6 +48,8 @@ import {
   SharedFileToken,
   SharedFolderListing,
   TaskRecord,
+  TerminalBackend,
+  TerminalOpenResult,
   TransferRecord,
   isDiscoveryPacket,
   unsupportedControlResponse
@@ -61,10 +64,32 @@ type RuntimePeer = PeerInfo;
 
 type AppState = PersistedAppState;
 
+const optionalRequire = createRequire(__filename);
+
+type PtyProcessLike = {
+  write: (data: string) => void;
+  resize?: (cols: number, rows: number) => void;
+  kill: () => void;
+  onData: (callback: (data: string) => void) => { dispose?: () => void } | void;
+  onExit: (callback: (event: { exitCode?: number; signal?: number | string }) => void) => { dispose?: () => void } | void;
+};
+
+type NodePtyModule = {
+  spawn: (file: string, args: string[], options: {
+    name?: string;
+    cols?: number;
+    rows?: number;
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+  }) => PtyProcessLike;
+};
+
 type TerminalSession = {
   terminalId: string;
   ownerPeerId: string;
-  child: ChildProcessWithoutNullStreams;
+  backend: TerminalBackend;
+  child?: ChildProcessWithoutNullStreams;
+  pty?: PtyProcessLike;
 };
 
 type RunningTask = {
@@ -1340,6 +1365,10 @@ async function handleControlMessage(payload: { fromId: string; fromName: string;
       assertPeerWritable(payload.fromId);
       return { ok: true, data: writeLocalTerminal(payload.data?.terminalId, payload.data?.input) };
 
+    case 'terminal.resize':
+      assertPeerWritable(payload.fromId);
+      return { ok: true, data: resizeLocalTerminal(payload.data?.terminalId, payload.data) };
+
     case 'terminal.close':
       return { ok: true, data: closeLocalTerminal(payload.data?.terminalId) };
 
@@ -1464,6 +1493,32 @@ function defaultShellCommand(command: string) {
 function defaultInteractiveShell() {
   if (process.platform === 'win32') return { file: 'powershell.exe', args: ['-NoLogo', '-NoProfile'] };
   return { file: process.env.SHELL || '/bin/zsh', args: ['-l'] };
+}
+
+let nodePtyLoadAttempted = false;
+let nodePtyModule: NodePtyModule | null = null;
+
+function getNodePty() {
+  if (nodePtyLoadAttempted) return nodePtyModule;
+  nodePtyLoadAttempted = true;
+  const errors: string[] = [];
+  for (const moduleName of ['node-pty', '@homebridge/node-pty-prebuilt-multiarch']) {
+    try {
+      nodePtyModule = optionalRequire(moduleName) as NodePtyModule;
+      return nodePtyModule;
+    } catch (error) {
+      errors.push(`${moduleName}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  nodePtyModule = null;
+  logRuntimeError('terminal.pty.unavailable', errors.join('\n'));
+  return nodePtyModule;
+}
+
+function terminalSize(data: any) {
+  const cols = Math.max(20, Math.min(300, Number(data?.cols || 100) || 100));
+  const rows = Math.max(8, Math.min(120, Number(data?.rows || 30) || 30));
+  return { cols, rows };
 }
 
 function appendTaskOutput(task: TaskRecord, stream: 'stdout' | 'stderr' | 'system', chunk: string) {
@@ -1639,16 +1694,51 @@ async function runRemoteCommand(peerIds: string[], command: string, cwd?: string
 function openLocalTerminal(originPeerId: string, originName: string, data: any) {
   const terminalId = crypto.randomUUID();
   const shell = defaultInteractiveShell();
-  const child = spawn(shell.file, shell.args, { cwd: os.homedir(), windowsHide: true });
-  terminalSessions.set(terminalId, { terminalId, ownerPeerId: originPeerId, child });
-  const sendOutput = (stream: 'stdout' | 'stderr', chunk: Buffer) => {
+  const { cols, rows } = terminalSize(data);
+  const sendOutput = (stream: 'stdout' | 'stderr' | 'system', chunk: string | Buffer) => {
     sendControl(originPeerId, 'terminal.output', {
       sessionId: data?.sessionId,
       terminalId,
       stream,
-      chunk: chunk.toString('utf8')
+      chunk: typeof chunk === 'string' ? chunk : chunk.toString('utf8')
     }).catch(() => {});
   };
+
+  const nodePty = getNodePty();
+  if (nodePty) {
+    try {
+      const pty = nodePty.spawn(shell.file, shell.args, {
+        name: 'xterm-256color',
+        cols,
+        rows,
+        cwd: os.homedir(),
+        env: {
+          ...process.env,
+          TERM: process.env.TERM || 'xterm-256color',
+          COLORTERM: process.env.COLORTERM || 'truecolor'
+        }
+      });
+      terminalSessions.set(terminalId, { terminalId, ownerPeerId: originPeerId, backend: 'pty', pty });
+      pty.onData((chunk) => sendOutput('stdout', chunk));
+      pty.onExit((event) => {
+        terminalSessions.delete(terminalId);
+        sendControl(originPeerId, 'terminal.closed', {
+          sessionId: data?.sessionId,
+          terminalId,
+          code: event.exitCode ?? null,
+          signal: event.signal ?? null
+        }).catch(() => {});
+      });
+      addAudit('terminal.open', `打开 PTY 交互终端 ${terminalId}`, originPeerId, state.device.id);
+      return { terminalId, shell: shell.file, backend: 'pty', cols, rows };
+    } catch (error) {
+      logRuntimeError('terminal.node-pty.open', error);
+      sendOutput('system', 'PTY 后端不可用，已降级到基础 spawn 终端。\r\n');
+    }
+  }
+
+  const child = spawn(shell.file, shell.args, { cwd: os.homedir(), windowsHide: true });
+  terminalSessions.set(terminalId, { terminalId, ownerPeerId: originPeerId, backend: 'spawn', child });
   child.stdout.on('data', (chunk) => sendOutput('stdout', chunk));
   child.stderr.on('data', (chunk) => sendOutput('stderr', chunk));
   child.on('error', (err) => {
@@ -1676,21 +1766,32 @@ function openLocalTerminal(originPeerId: string, originName: string, data: any) 
       signal
     }).catch(() => {});
   });
-  addAudit('terminal.open', `打开交互终端 ${terminalId}`, originPeerId, state.device.id);
-  return { terminalId, shell: shell.file };
+  addAudit('terminal.open', `打开基础交互终端 ${terminalId}`, originPeerId, state.device.id);
+  return { terminalId, shell: shell.file, backend: 'spawn', cols, rows };
 }
 
 function writeLocalTerminal(terminalId: string, input: string) {
   const session = terminalSessions.get(String(terminalId || ''));
   if (!session) throw new Error('终端会话不存在');
-  session.child.stdin.write(String(input || ''));
+  if (session.pty) session.pty.write(String(input || ''));
+  else if (session.child) session.child.stdin.write(String(input || ''));
+  return true;
+}
+
+function resizeLocalTerminal(terminalId: string, data: any) {
+  const session = terminalSessions.get(String(terminalId || ''));
+  if (!session) return false;
+  if (!session.pty?.resize) return false;
+  const { cols, rows } = terminalSize(data);
+  session.pty.resize(cols, rows);
   return true;
 }
 
 function closeLocalTerminal(terminalId: string) {
   const session = terminalSessions.get(String(terminalId || ''));
   if (!session) return false;
-  session.child.kill();
+  if (session.pty) session.pty.kill();
+  else session.child?.kill();
   terminalSessions.delete(terminalId);
   return true;
 }
@@ -2791,13 +2892,22 @@ async function handleLocalApi(pathname: string, method: string, body: any) {
     return runRemoteCommand(peerIds, body.command, body.cwd);
   }
   if (method === 'POST' && pathname === '/api/terminal/open') {
-    return openRemoteTerminal(body.peerId);
+    return openRemoteTerminal(body.peerId, body);
   }
   if (method === 'POST' && pathname === '/api/terminal/input') {
     assertPeerWritable(body.peerId);
     await sendControl(body.peerId, 'terminal.input', {
       terminalId: body.terminalId,
       input: body.input
+    });
+    return true;
+  }
+  if (method === 'POST' && pathname === '/api/terminal/resize') {
+    assertPeerWritable(body.peerId);
+    await sendControl(body.peerId, 'terminal.resize', {
+      terminalId: body.terminalId,
+      cols: body.cols,
+      rows: body.rows
     });
     return true;
   }
@@ -2939,12 +3049,19 @@ function authorizeLocal(req: http.IncomingMessage) {
   return req.headers.authorization === expected;
 }
 
-async function openRemoteTerminal(peerId: string) {
+async function openRemoteTerminal(peerId: string, data: any = {}) {
   assertPeerWritable(peerId);
   markDeviceOpened(peerId, 'open');
   const sessionId = crypto.randomUUID();
-  const result = await sendControl<{ terminalId: string; shell: string }>(peerId, 'terminal.open', { sessionId });
-  return { sessionId, ...result };
+  const { cols, rows } = terminalSize(data);
+  const result = await sendControl<TerminalOpenResult>(peerId, 'terminal.open', { sessionId, cols, rows, terminalVersion: 2 });
+  return {
+    ...result,
+    sessionId,
+    backend: result.backend || 'spawn' as TerminalBackend,
+    cols: result.cols || cols,
+    rows: result.rows || rows
+  };
 }
 
 function loadRendererWindow(win: BrowserWindow, query: Record<string, string> = {}) {
@@ -3176,8 +3293,9 @@ function registerIpc() {
     return uploadRemoteSharedFile(peerId, relativePath || '', localPath);
   });
   ipcMain.handle('lch:run-command', (_event, peerIds, command, cwd) => runRemoteCommand(peerIds || [], command, cwd));
-  ipcMain.handle('lch:open-terminal', (_event, peerId) => openRemoteTerminal(peerId));
+  ipcMain.handle('lch:open-terminal', (_event, peerId, size) => openRemoteTerminal(peerId, size || {}));
   ipcMain.handle('lch:terminal-input', (_event, peerId, terminalId, input) => sendControl(peerId, 'terminal.input', { terminalId, input }));
+  ipcMain.handle('lch:terminal-resize', (_event, peerId, terminalId, cols, rows) => sendControl(peerId, 'terminal.resize', { terminalId, cols, rows }));
   ipcMain.handle('lch:terminal-close', (_event, peerId, terminalId) => sendControl(peerId, 'terminal.close', { terminalId }));
   ipcMain.handle('lch:screen-request', (_event, peerId, sessionId) => {
     markDeviceOpened(peerId, 'open');
@@ -3263,7 +3381,10 @@ if (!app.requestSingleInstanceLock()) {
     if (discoveryTimer) clearInterval(discoveryTimer);
     if (pruneTimer) clearInterval(pruneTimer);
     for (const task of runningTasks.values()) task.child.kill();
-    for (const session of terminalSessions.values()) session.child.kill();
+    for (const session of terminalSessions.values()) {
+      if (session.pty) session.pty.kill();
+      else session.child?.kill();
+    }
     discoverySocket?.close();
     controlWss?.close();
     webServer?.close();

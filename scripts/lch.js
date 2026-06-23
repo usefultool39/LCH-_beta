@@ -489,29 +489,73 @@ async function terminal(peerId) {
   if (!peerId) throw new Error('Missing device id');
   peerId = await resolveDeviceRef(peerId).then((device) => device.id);
   let session;
+  let rl;
+  let rawMode = false;
+  let closing = false;
+  let onData;
+  let onResize;
+  function cleanup() {
+    closeEvents();
+    if (rl) rl.close();
+    if (rawMode && process.stdin.isTTY) process.stdin.setRawMode(false);
+    if (onData) process.stdin.off('data', onData);
+    if (onResize) process.stdout.off('resize', onResize);
+  }
+  async function closeTerminal() {
+    if (closing) return;
+    closing = true;
+    if (session) await request('POST', '/api/terminal/close', { peerId, terminalId: session.terminalId }).catch(() => {});
+    cleanup();
+    process.exit(0);
+  }
   const closeEvents = connectEvents((event, data) => {
     if (!session || data?.terminalId !== session.terminalId) return;
     if (event === 'terminal-output') process.stdout.write(String(data.chunk || ''));
     if (event === 'terminal-closed') {
-      closeEvents();
+      cleanup();
       process.exit(0);
     }
   });
-  session = await request('POST', '/api/terminal/open', { peerId });
-  console.log(`Opened terminal ${session.terminalId}. Ctrl+C to close.`);
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: false });
-  rl.on('line', async (line) => {
-    await request('POST', '/api/terminal/input', {
+  const size = process.stdout.isTTY
+    ? { cols: process.stdout.columns || 100, rows: process.stdout.rows || 30 }
+    : {};
+  session = await request('POST', '/api/terminal/open', { peerId, ...size });
+  console.error(`Opened terminal ${session.terminalId} (${session.backend || 'spawn'}). ${session.backend === 'pty' ? 'Ctrl+] to close.' : 'Ctrl+C to close.'}`);
+  if (session.backend === 'pty' && process.stdin.isTTY) {
+    rawMode = true;
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    onResize = () => request('POST', '/api/terminal/resize', {
       peerId,
       terminalId: session.terminalId,
-      input: `${line}\n`
+      cols: process.stdout.columns || 100,
+      rows: process.stdout.rows || 30
+    }).catch(() => {});
+    onData = (chunk) => {
+      if (chunk.length === 1 && chunk[0] === 0x1d) {
+        closeTerminal();
+        return;
+      }
+      request('POST', '/api/terminal/input', {
+        peerId,
+        terminalId: session.terminalId,
+        input: chunk.toString('utf8')
+      }).catch((error) => process.stderr.write(`\n${error.message || error}\n`));
+    };
+    process.stdout.on('resize', onResize);
+    process.stdin.on('data', onData);
+    onResize();
+  } else {
+    rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: false });
+    rl.on('line', async (line) => {
+      await request('POST', '/api/terminal/input', {
+        peerId,
+        terminalId: session.terminalId,
+        input: `${line}\n`
+      });
     });
-  });
-  process.on('SIGINT', async () => {
-    await request('POST', '/api/terminal/close', { peerId, terminalId: session.terminalId }).catch(() => {});
-    closeEvents();
-    process.exit(0);
-  });
+  }
+  process.on('SIGINT', closeTerminal);
 }
 
 async function observe(args) {

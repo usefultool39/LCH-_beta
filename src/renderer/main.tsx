@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { FitAddon } from '@xterm/addon-fit';
+import { Terminal as XTerm } from '@xterm/xterm';
 import {
   Camera,
   CheckCircle2,
@@ -43,6 +45,7 @@ import {
 } from 'lucide-react';
 import { APP_VERSION, MAX_FILE_BYTES } from '../shared/protocol';
 import type { AppStateView, DevicePreference, FirewallStatus, PeerInfo, RemoteInputEvent, RemoteOpenResult, RemoteSessionRecord, SharedFileToken, SharedFolderListing, TaskRecord, TerminalOutputEvent, TransferRecord } from '../shared/protocol';
+import '@xterm/xterm/css/xterm.css';
 import './styles.css';
 
 const api = window.lanControlHub;
@@ -54,6 +57,9 @@ type TerminalTab = {
   sessionId: string;
   terminalId: string;
   shell: string;
+  backend: 'pty' | 'spawn';
+  cols: number;
+  rows: number;
   output: string;
 };
 
@@ -1275,38 +1281,119 @@ function SettingsView({
   );
 }
 
-function TerminalModal({ terminal, onInput, onClose }: {
+function TerminalModal({ terminal, onInput, onResize, onClose }: {
   terminal: TerminalTab | null;
   onInput: (text: string) => void;
+  onResize: (cols: number, rows: number) => void;
   onClose: () => void;
 }) {
   const outputRef = useRef<HTMLPreElement | null>(null);
+  const terminalSurfaceRef = useRef<HTMLDivElement | null>(null);
+  const xtermRef = useRef<XTerm | null>(null);
+  const lastOutputRef = useRef('');
+  const lastSizeRef = useRef('');
+  const onInputRef = useRef(onInput);
+  const onResizeRef = useRef(onResize);
   const [input, setInput] = useState('');
   useEffect(() => {
-    if (outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight;
-  }, [terminal?.output]);
+    onInputRef.current = onInput;
+  }, [onInput]);
+  useEffect(() => {
+    onResizeRef.current = onResize;
+  }, [onResize]);
+  useEffect(() => {
+    if (terminal?.backend !== 'pty' && outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight;
+  }, [terminal?.backend, terminal?.output]);
   useEffect(() => setInput(''), [terminal?.terminalId]);
+  useEffect(() => {
+    if (!terminal || terminal.backend !== 'pty' || !terminalSurfaceRef.current) return;
+    const xterm = new XTerm({
+      cursorBlink: true,
+      fontFamily: 'Cascadia Mono, Consolas, Menlo, Monaco, monospace',
+      fontSize: 13,
+      scrollback: 5000,
+      theme: {
+        background: '#07110f',
+        foreground: '#d9f7ef',
+        cursor: '#8cebd5',
+        selectionBackground: '#27564d'
+      }
+    });
+    const fitAddon = new FitAddon();
+    xterm.loadAddon(fitAddon);
+    xterm.open(terminalSurfaceRef.current);
+    xtermRef.current = xterm;
+    lastOutputRef.current = '';
+    lastSizeRef.current = '';
+
+    const sendResize = () => {
+      try {
+        fitAddon.fit();
+        const key = `${xterm.cols}:${xterm.rows}`;
+        if (key !== lastSizeRef.current) {
+          lastSizeRef.current = key;
+          onResizeRef.current(xterm.cols, xterm.rows);
+        }
+      } catch {
+        // The terminal can be measured before layout is stable.
+      }
+    };
+    const inputDisposable = xterm.onData((data) => onInputRef.current(data));
+    const resizeObserver = new ResizeObserver(sendResize);
+    resizeObserver.observe(terminalSurfaceRef.current);
+    window.addEventListener('resize', sendResize);
+    const frame = window.requestAnimationFrame(sendResize);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener('resize', sendResize);
+      resizeObserver.disconnect();
+      inputDisposable.dispose();
+      xterm.dispose();
+      if (xtermRef.current === xterm) xtermRef.current = null;
+    };
+  }, [terminal?.backend, terminal?.terminalId]);
+  useEffect(() => {
+    if (!terminal || terminal.backend !== 'pty' || !xtermRef.current) return;
+    const output = terminal.output || '';
+    const previous = lastOutputRef.current;
+    if (output.startsWith(previous)) {
+      const chunk = output.slice(previous.length);
+      if (chunk) xtermRef.current.write(chunk);
+    } else {
+      xtermRef.current.reset();
+      if (output) xtermRef.current.write(output);
+    }
+    lastOutputRef.current = output;
+  }, [terminal?.backend, terminal?.output]);
   if (!terminal) return null;
+  const isPty = terminal.backend === 'pty';
   return (
     <div className="modalShade">
-      <section className="terminalModal">
+      <section className={`terminalModal ${isPty ? 'ptyTerminal' : ''}`}>
         <header>
           <div>
             <h2>{terminal.peerName} · 交互终端</h2>
-            <p>{terminal.shell}</p>
+            <p>{terminal.shell} · {isPty ? 'PTY / xterm' : '基础终端'}</p>
           </div>
           <button className="secondary" onClick={onClose}><Power size={16} /> 关闭</button>
         </header>
-        <pre ref={outputRef}>{terminal.output || '终端已打开，输入命令后按 Enter。'}</pre>
-        <form onSubmit={(event) => {
-          event.preventDefault();
-          if (!input.trim()) return;
-          onInput(`${input}\n`);
-          setInput('');
-        }}>
-          <input value={input} onChange={(event) => setInput(event.target.value)} placeholder="输入终端命令" />
-          <button className="primary" type="submit">发送</button>
-        </form>
+        {isPty ? (
+          <div className="terminalSurface" ref={terminalSurfaceRef} />
+        ) : (
+          <>
+            <pre ref={outputRef}>{terminal.output || '终端已打开，输入命令后按 Enter。'}</pre>
+            <form onSubmit={(event) => {
+              event.preventDefault();
+              if (!input.trim()) return;
+              onInput(`${input}\n`);
+              setInput('');
+            }}>
+              <input value={input} onChange={(event) => setInput(event.target.value)} placeholder="输入终端命令" />
+              <button className="primary" type="submit">发送</button>
+            </form>
+          </>
+        )}
       </section>
     </div>
   );
@@ -1787,13 +1874,16 @@ function App() {
 
   async function openTerminal(peer: PeerInfo) {
     await run(async () => {
-      const result = await api.openTerminal(peer.id);
+      const result = await api.openTerminal(peer.id, { cols: 100, rows: 30 });
       setTerminal({
         peerId: peer.id,
         peerName: peer.name,
         sessionId: result.sessionId,
         terminalId: result.terminalId,
         shell: result.shell,
+        backend: result.backend || 'spawn',
+        cols: result.cols || 100,
+        rows: result.rows || 30,
         output: ''
       });
       return null;
@@ -2022,8 +2112,19 @@ function App() {
         terminal={terminal}
         onInput={(input) => {
           if (!terminal) return;
-          api.terminalInput(terminal.peerId, terminal.terminalId, input);
-          setTerminal({ ...terminal, output: `${terminal.output}> ${input}` });
+          api.terminalInput(terminal.peerId, terminal.terminalId, input).catch((err) => setError(err?.message || String(err)));
+          if (terminal.backend !== 'pty') {
+            setTerminal((current) => current && current.terminalId === terminal.terminalId
+              ? { ...current, output: `${current.output}> ${input}` }
+              : current);
+          }
+        }}
+        onResize={(cols, rows) => {
+          if (!terminal || terminal.backend !== 'pty') return;
+          setTerminal((current) => current && current.terminalId === terminal.terminalId
+            ? { ...current, cols, rows }
+            : current);
+          api.terminalResize(terminal.peerId, terminal.terminalId, cols, rows).catch((err) => setError(err?.message || String(err)));
         }}
         onClose={() => {
           if (terminal) api.terminalClose(terminal.peerId, terminal.terminalId);

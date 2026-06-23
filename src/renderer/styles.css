@@ -1664,6 +1664,25 @@ textarea:focus {
   white-space: pre-wrap;
 }
 
+.terminalModal.ptyTerminal {
+  height: min(720px, 92vh);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.terminalSurface {
+  min-height: 0;
+  padding: 10px;
+  background: #07110f;
+}
+
+.terminalSurface .xterm {
+  height: 100%;
+}
+
+.terminalSurface .xterm-viewport {
+  overflow-y: auto;
+}
+
 .terminalModal form {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 86px;

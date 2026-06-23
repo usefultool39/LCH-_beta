@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.6.0
+
+- Upgrade remote terminals with an optional node-pty-compatible backend and xterm renderer for ANSI output, cursor control, raw keyboard input, and terminal resizing.
+- Keep the previous spawn-based terminal path as a fallback when PTY support is unavailable.
+- Add `terminal.pty` capability advertising plus `terminal.resize` control messages for mixed-version compatibility.
+- Update CLI terminal mode to use raw TTY input for PTY sessions while preserving line-based input for fallback sessions.
+
 ## v0.5.1
 
 - Add explicit control protocol and capability-version metadata to discovery packets for safer mixed-version upgrades.

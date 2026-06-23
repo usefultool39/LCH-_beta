@@ -10,6 +10,7 @@ const {
 } = require('../dist/shared/protocol');
 
 test('capability versions are declared for every advertised capability', () => {
+  assert.equal(CAPABILITIES.includes('terminal.pty'), true);
   for (const capability of CAPABILITIES) {
     assert.equal(CAPABILITY_VERSIONS[capability], 1);
   }

@@ -1,12 +1,12 @@
 {
   "name": "lan-control-hub",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Windows/macOS LAN device control hub for chat, files, commands, terminals, and screen view.",
   "author": "usefultool39",
   "main": "dist/main/index.js",
   "repository": {
     "type": "git",
-    "url": "https://github.com/usefultool39/LCH-_beta.git"
+    "url": "https://github.com/usefultool39/LCH-beta.git"
   },
   "bin": {
     "lch": "scripts/lch.js"
@@ -32,6 +32,7 @@
   "build": {
     "appId": "local.lan-control-hub.app",
     "productName": "Lan Control Hub",
+    "npmRebuild": false,
     "directories": {
       "output": "release"
     },
@@ -41,6 +42,10 @@
       "package.json",
       "scripts/lch.js",
       "scripts/lch.cmd"
+    ],
+    "asarUnpack": [
+      "node_modules/node-pty/**/*",
+      "node_modules/@homebridge/node-pty-prebuilt-multiarch/**/*"
     ],
     "win": {
       "icon": "build/icon.ico",
@@ -84,6 +89,8 @@
   },
   "dependencies": {
     "@nut-tree-fork/nut-js": "^4.2.6",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "cross-env": "^7.0.3",
     "lucide-react": "^0.468.0",
     "react": "^18.2.0",
@@ -102,5 +109,8 @@
     "typescript": "^5.3.3",
     "vite": "^8.0.16",
     "wait-on": "^7.2.0"
+  },
+  "optionalDependencies": {
+    "@homebridge/node-pty-prebuilt-multiarch": "^0.13.1"
   }
 }

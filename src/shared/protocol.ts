@@ -1,5 +1,5 @@
 export const APP_NAME = 'Lan Control Hub';
-export const APP_VERSION = '0.5.1';
+export const APP_VERSION = '0.6.0';
 export const STATE_SCHEMA_VERSION = 2;
 export const DISCOVERY_PROTOCOL_VERSION = 1;
 export const CONTROL_PROTOCOL_VERSION = 1;
@@ -27,6 +27,7 @@ export const CAPABILITIES = [
   'files',
   'commands',
   'terminal',
+  'terminal.pty',
   'screen.view',
   'remote.input',
   'remote.clipboard',
@@ -365,6 +366,17 @@ export interface TerminalOutputEvent {
   terminalId: string;
   stream: TaskStream;
   chunk: string;
+}
+
+export type TerminalBackend = 'pty' | 'spawn';
+
+export interface TerminalOpenResult {
+  sessionId: string;
+  terminalId: string;
+  shell: string;
+  backend: TerminalBackend;
+  cols?: number;
+  rows?: number;
 }
 
 export interface ScreenSignalEvent {
