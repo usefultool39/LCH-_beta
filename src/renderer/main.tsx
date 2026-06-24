@@ -36,6 +36,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   ShieldOff,
+  Smartphone,
   Star,
   TerminalSquare,
   Trash2,
@@ -197,6 +198,18 @@ function peerLabelById(state: AppStateView, peerId: string) {
   const trusted = state.trustedDevices[peerId];
   const preference = state.devicePreferences[peerId];
   return peer?.displayName || preference?.alias || peer?.name || trusted?.name || peerId;
+}
+
+function capabilityLabels(peer: PeerInfo) {
+  const labels = [
+    peer.capabilities.includes('chat') ? '聊天' : '',
+    peer.capabilities.includes('files') ? '文件' : '',
+    peer.capabilities.includes('terminal') ? '终端' : '',
+    peer.capabilities.includes('screen.view') ? '看屏' : '',
+    peer.capabilities.includes('remote.input') ? '远控' : '',
+    peer.capabilities.includes('remote.clipboard') ? '剪贴板' : ''
+  ].filter(Boolean);
+  return labels.length ? labels : ['基础连接'];
 }
 
 function directPeerId(record: ConversationRecord, state: AppStateView) {
@@ -605,7 +618,7 @@ function Dashboard({
                 <h3>{peerLabel(peer)}</h3>
                 <p>{peer.name} · {peer.address}:{peer.controlPort} · ID {peer.id.slice(0, 8)}</p>
                 <div className="capList">
-                  {peer.capabilities.filter((cap) => !cap.includes('agent') && !cap.includes('iot')).slice(0, 8).map((cap) => <span key={cap}>{cap}</span>)}
+                  {capabilityLabels(peer).map((label) => <span key={label}>{label}</span>)}
                 </div>
                 <div className="tileActions">
                   <button className="tilePrimary" disabled={!peer.isOnline || !peer.trusted || peer.readOnly} onClick={() => onOpenRemote(peer)}><MousePointer2 size={15} /> 远控</button>
@@ -1463,7 +1476,9 @@ function SettingsView({
   const [manualAddress, setManualAddress] = useState('');
   const [manualBusy, setManualBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copiedMobile, setCopiedMobile] = useState(false);
   const [secretVisible, setSecretVisible] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [firewall, setFirewall] = useState<FirewallStatus | null>(null);
   const [firewallBusy, setFirewallBusy] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
@@ -1476,6 +1491,8 @@ function SettingsView({
   const trustedDevices = Object.values(state.trustedDevices)
     .sort((a, b) => a.name.localeCompare(b.name));
   const pendingPeers = state.peers.filter((peer) => !peer.trusted);
+  const mobileUrls = state.networkInfo.addresses.map((address) => `http://${address}:${state.networkInfo.webPort}/mobile/`);
+  const primaryMobileUrl = mobileUrls[0] || `http://127.0.0.1:${state.networkInfo.webPort}/mobile/`;
   useEffect(() => setName(state.device.name), [state.device.name]);
   useEffect(() => {
     setIcePolicy(state.webrtc?.iceTransportPolicy || 'all');
@@ -1745,28 +1762,67 @@ function SettingsView({
             <button className="primary" onClick={() => api.openLatestRelease()}><Download size={16} /> 打开下载页</button>
           </div>
         </section>
-        <section className="panel settingsApi">
-          <h2>Local API</h2>
-          <p>仅本机监听：127.0.0.1:{state.networkInfo.localApiPort}</p>
-          <p>常用命令：lch devices、lch run --all "hostname"、lch file get --device &lt;设备&gt; &lt;路径&gt;</p>
-        </section>
-        <section className="panel firewallPanel">
-          <h2>Windows 防火墙</h2>
-          <p>{firewall?.message || '正在检查本机防火墙状态...'}</p>
-          {firewall?.supported ? (
-            <div className="firewallMeta">
-              <span>阻止规则：{firewall.blockRules}</span>
-              <span>允许规则：{firewall.allowRules}</span>
+        <section className="panel settingsMobile">
+          <div className="panelHeader">
+            <div>
+              <h2>手机控制台</h2>
+              <p>手机和这台电脑在同一局域网，或通过 Tailscale 连到这台电脑时使用。</p>
+            </div>
+            <span className="statusPill online">可用</span>
+          </div>
+          <div className="mobileUrlBox">
+            <Smartphone size={18} />
+            <strong>{primaryMobileUrl}</strong>
+          </div>
+          {mobileUrls.length > 1 ? (
+            <div className="mobileUrlList">
+              {mobileUrls.slice(1).map((url) => <span key={url}>{url}</span>)}
             </div>
           ) : null}
           <div className="rowActions">
-            <button className="secondary" disabled={firewallBusy} onClick={() => api.getFirewallStatus().then(setFirewall)}>
-              <RefreshCw size={16} /> 刷新
-            </button>
-            <button className="primary" disabled={firewallBusy || !firewall?.canRepair} onClick={repairFirewall}>
-              <ShieldCheck size={16} /> {firewallBusy ? '修复中' : '修复防火墙'}
-            </button>
+            <button className="secondary" onClick={async () => {
+              await navigator.clipboard.writeText(primaryMobileUrl);
+              setCopiedMobile(true);
+              window.setTimeout(() => setCopiedMobile(false), 1200);
+            }}><Clipboard size={16} /> {copiedMobile ? '已复制' : '复制手机地址'}</button>
           </div>
+          <p className="settingsHint">手机打开后使用房间密钥登录。默认只开放快捷动作，不直接开放远程终端。</p>
+        </section>
+        <section className="panel settingsAdvanced">
+          <div className="panelHeader">
+            <div>
+              <h2>高级工具</h2>
+              <p>脚本、Agent、诊断和防火墙修复放在这里，平时不用打开。</p>
+            </div>
+            <button className="secondary" onClick={() => setShowAdvanced(!showAdvanced)}>{showAdvanced ? '收起' : '展开'}</button>
+          </div>
+          {showAdvanced ? (
+            <div className="advancedStack">
+              <section className="advancedBox">
+                <h3>Local API</h3>
+                <p>仅本机监听：127.0.0.1:{state.networkInfo.localApiPort}</p>
+                <p>常用命令：lch devices、lch run --all "hostname"、lch file get --device &lt;设备&gt; &lt;路径&gt;</p>
+              </section>
+              <section className="advancedBox">
+                <h3>Windows 防火墙</h3>
+                <p>{firewall?.message || '正在检查本机防火墙状态...'}</p>
+                {firewall?.supported ? (
+                  <div className="firewallMeta">
+                    <span>阻止规则：{firewall.blockRules}</span>
+                    <span>允许规则：{firewall.allowRules}</span>
+                  </div>
+                ) : null}
+                <div className="rowActions">
+                  <button className="secondary" disabled={firewallBusy} onClick={() => api.getFirewallStatus().then(setFirewall)}>
+                    <RefreshCw size={16} /> 刷新
+                  </button>
+                  <button className="primary" disabled={firewallBusy || !firewall?.canRepair} onClick={repairFirewall}>
+                    <ShieldCheck size={16} /> {firewallBusy ? '修复中' : '修复防火墙'}
+                  </button>
+                </div>
+              </section>
+            </div>
+          ) : null}
         </section>
         </> : null}
         {settingsTab === 'files' ? (

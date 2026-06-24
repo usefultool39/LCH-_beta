@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.14.1
+
+- Simplify desktop device capability labels so the workbench shows user-facing actions instead of internal capability names.
+- Add a clear phone console entry in the system settings page with the current mobile URL and copy action.
+- Move Local API and Windows firewall repair under a collapsed advanced tools section to keep everyday settings simpler.
+- Add an interface and operation design guide documenting the expected desktop, mobile, API, and troubleshooting layout.
+
 ## v0.14.0
 
 - Add a standalone `mobile/` Web/PWA control console served from `/mobile/` on the LAN Web port.

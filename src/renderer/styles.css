@@ -1867,6 +1867,8 @@ textarea:focus {
 .settingsRoom,
 .settingsUpdate,
 .settingsExternal,
+.settingsMobile,
+.settingsAdvanced,
 .settingsApi,
 .firewallPanel {
   grid-column: 1;
@@ -1939,6 +1941,67 @@ textarea:focus {
 .updateBox span {
   color: #64748b;
   font-size: 12px;
+}
+
+.mobileUrlBox {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  padding: 12px;
+  color: #1e293b;
+  background: #f8fafc;
+}
+
+.mobileUrlBox svg {
+  color: #2563eb;
+}
+
+.mobileUrlBox strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+}
+
+.mobileUrlList {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.mobileUrlList span {
+  overflow-wrap: anywhere;
+}
+
+.advancedStack {
+  display: grid;
+  gap: 12px;
+}
+
+.advancedBox {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  padding: 12px;
+  background: #f8fafc;
+}
+
+.advancedBox h3 {
+  margin: 0;
+  color: #1e293b;
+  font-size: 14px;
+}
+
+.advancedBox p {
+  margin: 0;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .manualPeerList {
@@ -2395,6 +2458,8 @@ textarea:focus {
   .settingsRoom,
   .settingsUpdate,
   .settingsExternal,
+  .settingsMobile,
+  .settingsAdvanced,
   .settingsApi,
   .firewallPanel {
     grid-column: auto;
