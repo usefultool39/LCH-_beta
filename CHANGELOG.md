@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.15.2
+
+- Add an explicit full disk access switch for trusted devices so the remote file hub can expose visible drives such as `C:` and external disks.
+- Keep the safer common-folder file library as the default, with legacy state migration leaving full disk access disabled until the device owner enables it.
+- Add Local API and CLI support for checking or changing the local full disk access setting.
+
 ## v0.15.1
 
 - Finalize the current mobile-command checkpoint with consolidated local documentation and release metadata.

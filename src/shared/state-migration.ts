@@ -41,6 +41,7 @@ export type PersistedAppState = {
   auditLog: any[];
   sharedFolder: string;
   fileShareEnabled: boolean;
+  fullDiskAccessEnabled: boolean;
   autoTrustDevices: boolean;
   localApiToken: string;
   manualPeerAddresses: ManualPeerAddress[];
@@ -330,6 +331,7 @@ export function migrateState(raw: unknown, defaults: PersistedAppState, options:
     auditLog: Array.isArray(parsed.auditLog) ? parsed.auditLog.slice(-MAX_AUDIT_EVENTS) : [],
     sharedFolder: parsed.sharedFolder ? String(parsed.sharedFolder) : '',
     fileShareEnabled: parsed.fileShareEnabled !== false,
+    fullDiskAccessEnabled: Boolean(parsed.fullDiskAccessEnabled),
     autoTrustDevices: Boolean(parsed.autoTrustDevices),
     localApiToken: parsed.localApiToken ? String(parsed.localApiToken) : defaults.localApiToken,
     manualPeerAddresses: manualPeerNormalizer(Array.isArray(parsed.manualPeerAddresses) ? parsed.manualPeerAddresses : []),
