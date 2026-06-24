@@ -25,6 +25,7 @@ function defaultState() {
     sharedFolder: '',
     fileShareEnabled: true,
     autoTrustDevices: false,
+    agentGatewayEnabled: false,
     localApiToken: 'default-token',
     manualPeerAddresses: [],
     transfers: [],
@@ -69,7 +70,8 @@ test('migrateState upgrades legacy persisted state without losing usable data', 
     }],
     manualPeerAddresses: ['100.64.1.2', { address: '100.64.1.3:46890', status: 'online' }],
     transfers: [{ id: 'transfer-1', peerId: 'peer-1', peerName: 'Peer', name: 'demo.txt', size: 5 }],
-    fileShareEnabled: false
+    fileShareEnabled: false,
+    agentGatewayEnabled: true
   }, defaultState(), {
     publicKeyHash: () => 'computed-hash'
   });
@@ -78,6 +80,7 @@ test('migrateState upgrades legacy persisted state without losing usable data', 
   assert.equal(migrated.device.id, 'device-1');
   assert.equal(migrated.device.publicKeyHash, 'computed-hash');
   assert.equal(migrated.fileShareEnabled, false);
+  assert.equal(migrated.agentGatewayEnabled, true);
   assert.equal(migrated.conversations['peer-1'][0].peerId, 'peer-1');
   assert.equal(migrated.conversations['peer-1'][0].conversationId, 'peer-1');
   assert.equal(migrated.conversations['peer-1'][0].markdown, true);
@@ -91,6 +94,20 @@ test('migrateState upgrades legacy persisted state without losing usable data', 
   assert.equal(migrated.manualPeerAddresses[1].status, 'online');
   assert.equal(migrated.transfers[0].status, 'failed');
   assert.deepEqual(migrated.webrtc, DEFAULT_WEBRTC_CONFIG);
+});
+
+test('migrateState keeps Agent Gateway closed for legacy state', () => {
+  const migrated = migrateState({
+    device: {
+      id: 'device-1',
+      name: 'Desk',
+      platform: 'win32',
+      publicKey: 'public-key',
+      privateKey: 'private-key'
+    }
+  }, defaultState());
+
+  assert.equal(migrated.agentGatewayEnabled, false);
 });
 
 test('normalizeConversationRecords preserves group metadata and fills direct metadata', () => {

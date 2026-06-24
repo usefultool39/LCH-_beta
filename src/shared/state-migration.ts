@@ -42,6 +42,7 @@ export type PersistedAppState = {
   sharedFolder: string;
   fileShareEnabled: boolean;
   autoTrustDevices: boolean;
+  agentGatewayEnabled: boolean;
   localApiToken: string;
   manualPeerAddresses: ManualPeerAddress[];
   transfers: TransferRecord[];
@@ -331,6 +332,7 @@ export function migrateState(raw: unknown, defaults: PersistedAppState, options:
     sharedFolder: parsed.sharedFolder ? String(parsed.sharedFolder) : '',
     fileShareEnabled: parsed.fileShareEnabled !== false,
     autoTrustDevices: Boolean(parsed.autoTrustDevices),
+    agentGatewayEnabled: Boolean(parsed.agentGatewayEnabled),
     localApiToken: parsed.localApiToken ? String(parsed.localApiToken) : defaults.localApiToken,
     manualPeerAddresses: manualPeerNormalizer(Array.isArray(parsed.manualPeerAddresses) ? parsed.manualPeerAddresses : []),
     transfers: normalizeTransferRecords(Array.isArray(parsed.transfers) ? parsed.transfers : []),

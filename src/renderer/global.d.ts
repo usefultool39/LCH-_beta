@@ -21,6 +21,7 @@ declare global {
       updateDevicePreference: (peerId: string, patch: Partial<DevicePreference>) => Promise<AppStateView>;
       setFileSharing: (enabled: boolean) => Promise<AppStateView>;
       setAutoTrust: (enabled: boolean) => Promise<AppStateView>;
+      setAgentGateway: (enabled: boolean) => Promise<AppStateView>;
       setWebRtcConfig: (config: WebRtcConfig) => Promise<AppStateView>;
       connectManualPeer: (address: string) => Promise<AppStateView>;
       removeManualPeer: (address: string) => Promise<AppStateView>;

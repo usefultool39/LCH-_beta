@@ -438,6 +438,7 @@ function createDefaultState(): AppState {
     sharedFolder: '',
     fileShareEnabled: true,
     autoTrustDevices: false,
+    agentGatewayEnabled: false,
     localApiToken: base64url(crypto.randomBytes(32)),
     manualPeerAddresses: [],
     transfers: [],
@@ -848,6 +849,7 @@ function appStateView() {
     sharedFolder: state.sharedFolder,
     fileShareEnabled: state.fileShareEnabled,
     autoTrustDevices: state.autoTrustDevices,
+    agentGatewayEnabled: state.agentGatewayEnabled,
     manualPeerAddresses: state.manualPeerAddresses,
     nearbyRooms: serializeNearbyRooms(),
     transfers: state.transfers.slice(0, MAX_TRANSFER_RECORDS),
@@ -902,6 +904,9 @@ function mobileStateView() {
   return {
     appName: APP_NAME,
     appVersion: APP_VERSION,
+    agentGateway: {
+      enabled: state.agentGatewayEnabled
+    },
     home: state.home ? {
       id: state.home.id,
       code: compactDeviceCode(state.home.id, 'ROOM'),
@@ -940,7 +945,7 @@ function mobileStateView() {
       ...peersView
     ],
     actions: MOBILE_ACTIONS,
-    commandPresets: MOBILE_COMMAND_PRESETS,
+    commandPresets: state.agentGatewayEnabled ? MOBILE_COMMAND_PRESETS : [],
     tasks: state.tasks.slice(0, 30).map(mobileTaskView),
     network: {
       webPort,
@@ -1012,7 +1017,7 @@ function mobileActionInfo(actionId: string) {
   return action;
 }
 
-function mobileTargets(peerIds: unknown) {
+function mobileTargets(peerIds: unknown, options: { gatewayOnlyWhenDisabled?: boolean } = {}) {
   const requested = new Set(Array.isArray(peerIds) ? peerIds.map((id) => String(id || '').trim()).filter(Boolean) : []);
   const peersView = serializePeers();
   const allowed = [
@@ -1026,6 +1031,14 @@ function mobileTargets(peerIds: unknown) {
       readOnly: peer.readOnly
     }))
   ].filter((target) => target.isOnline && target.trusted && !target.readOnly);
+
+  if (!state.agentGatewayEnabled) {
+    if (!options.gatewayOnlyWhenDisabled) assertAgentGatewayEnabled();
+    const gateway = allowed.filter((target) => target.isSelf);
+    if (!gateway.length) throw new Error('No writable online mobile target');
+    return gateway;
+  }
+
   const targets = requested.size ? allowed.filter((target) => requested.has(target.id)) : allowed;
   if (!targets.length) throw new Error('No writable online mobile target');
   return targets;
@@ -1034,7 +1047,7 @@ function mobileTargets(peerIds: unknown) {
 async function runMobileAction(body: any, req: http.IncomingMessage) {
   const sessionItem = requireMobileSession(req);
   const action = mobileActionInfo(String(body?.actionId || ''));
-  const targets = mobileTargets(body?.peerIds);
+  const targets = mobileTargets(body?.peerIds, { gatewayOnlyWhenDisabled: true });
   const taskIds: string[] = [];
   for (const target of targets) {
     const command = mobileActionCommand(action.id, target.platform);
@@ -1069,6 +1082,7 @@ function mobileCommandMode(input: unknown) {
 }
 
 async function runMobileCommand(body: any, req: http.IncomingMessage) {
+  assertAgentGatewayEnabled();
   const sessionItem = requireMobileSession(req);
   const command = cleanMobileCommand(body?.command);
   const mode = mobileCommandMode(body?.mode);
@@ -1117,6 +1131,7 @@ async function handleMobileApi(pathname: string, method: string, body: any, req:
       appVersion: APP_VERSION,
       home: state.home ? { id: state.home.id, name: state.home.name } : null,
       device: { id: state.device.id, name: state.device.name },
+      agentGateway: { enabled: state.agentGatewayEnabled },
       requiresLogin: true
     };
   }
@@ -1140,7 +1155,7 @@ async function handleMobileApi(pathname: string, method: string, body: any, req:
   requireMobileSession(req);
   if (method === 'GET' && pathname === '/mobile-api/state') return mobileStateView();
   if (method === 'GET' && pathname === '/mobile-api/actions') return MOBILE_ACTIONS;
-  if (method === 'GET' && pathname === '/mobile-api/commands/presets') return MOBILE_COMMAND_PRESETS;
+  if (method === 'GET' && pathname === '/mobile-api/commands/presets') return state.agentGatewayEnabled ? MOBILE_COMMAND_PRESETS : [];
   if (method === 'GET' && pathname === '/mobile-api/tasks') return state.tasks.slice(0, 30).map(mobileTaskView);
   if (method === 'POST' && pathname === '/mobile-api/actions/run') return runMobileAction(body, req);
   if (method === 'POST' && pathname === '/mobile-api/commands/run') return runMobileCommand(body, req);
@@ -1268,6 +1283,20 @@ function setAutoTrustDevices(enabled: boolean) {
   saveState();
   emitState();
   return appStateView();
+}
+
+function setAgentGatewayEnabled(enabled: boolean) {
+  state.agentGatewayEnabled = Boolean(enabled);
+  addAudit('agent.gateway', state.agentGatewayEnabled ? '开启 Agent Gateway 高级控制' : '关闭 Agent Gateway 高级控制');
+  saveState();
+  emitState();
+  return appStateView();
+}
+
+function assertAgentGatewayEnabled() {
+  if (!state.agentGatewayEnabled) {
+    throw new Error('Agent Gateway 未开启：请先在桌面端设置 / 系统 / 高级工具中开启手机命令控制');
+  }
 }
 
 function setWebRtcConfig(config: Partial<WebRtcConfig>) {
@@ -3880,6 +3909,7 @@ async function handleLocalApi(pathname: string, method: string, body: any) {
   if (method === 'POST' && pathname === '/api/devices/revoke') return revokeTrustedDevice(body.peerId);
   if (method === 'POST' && pathname === '/api/settings/file-sharing') return setFileSharing(body.enabled !== false);
   if (method === 'POST' && pathname === '/api/settings/auto-trust') return setAutoTrustDevices(body.enabled !== false);
+  if (method === 'POST' && pathname === '/api/settings/agent-gateway') return setAgentGatewayEnabled(body.enabled === true);
   if (method === 'POST' && pathname === '/api/settings/webrtc') return setWebRtcConfig(body.webrtc || body.config || body);
   if (method === 'GET' && pathname === '/api/tasks') return state.tasks.slice(0, 200);
   if (method === 'GET' && pathname === '/api/transfers') return state.transfers.slice(0, MAX_TRANSFER_RECORDS);
@@ -4199,6 +4229,7 @@ function registerIpc() {
   ipcMain.handle('lch:update-device-preference', (_event, peerId, patch) => updateDevicePreference(peerId, patch || {}));
   ipcMain.handle('lch:set-file-sharing', (_event, enabled) => setFileSharing(Boolean(enabled)));
   ipcMain.handle('lch:set-auto-trust', (_event, enabled) => setAutoTrustDevices(Boolean(enabled)));
+  ipcMain.handle('lch:set-agent-gateway', (_event, enabled) => setAgentGatewayEnabled(Boolean(enabled)));
   ipcMain.handle('lch:set-webrtc-config', (_event, config) => setWebRtcConfig(config || {}));
   ipcMain.handle('lch:connect-manual-peer', (_event, address) => connectManualPeer(address));
   ipcMain.handle('lch:remove-manual-peer', (_event, address) => removeManualPeer(address));

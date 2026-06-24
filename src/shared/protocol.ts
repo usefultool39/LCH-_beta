@@ -351,6 +351,7 @@ export interface AppStateView {
   sharedFolder: string;
   fileShareEnabled: boolean;
   autoTrustDevices: boolean;
+  agentGatewayEnabled: boolean;
   manualPeerAddresses: ManualPeerAddress[];
   nearbyRooms: LanRoomInfo[];
   transfers: TransferRecord[];

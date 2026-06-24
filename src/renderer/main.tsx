@@ -1452,6 +1452,7 @@ function SettingsView({
   state,
   onUpdateName,
   onSetAutoTrust,
+  onSetAgentGateway,
   onSetWebRtcConfig,
   onConnectManualPeer,
   onRemoveManualPeer,
@@ -1463,6 +1464,7 @@ function SettingsView({
   state: AppStateView;
   onUpdateName: (name: string) => void;
   onSetAutoTrust: (enabled: boolean) => void;
+  onSetAgentGateway: (enabled: boolean) => void;
   onSetWebRtcConfig: (config: WebRtcConfig) => Promise<unknown> | void;
   onConnectManualPeer: (address: string) => Promise<unknown> | void;
   onRemoveManualPeer: (address: string) => Promise<unknown> | void;
@@ -1766,7 +1768,7 @@ function SettingsView({
           <div className="panelHeader">
             <div>
               <h2>手机控制台</h2>
-              <p>手机和这台电脑在同一局域网，或通过 Tailscale 连到这台电脑时使用。</p>
+              <p>手机和这台电脑在同一局域网，或通过 Tailscale 连到这台电脑时使用。默认只开放基础控制面板。</p>
             </div>
             <span className="statusPill online">可用</span>
           </div>
@@ -1786,7 +1788,7 @@ function SettingsView({
               window.setTimeout(() => setCopiedMobile(false), 1200);
             }}><Clipboard size={16} /> {copiedMobile ? '已复制' : '复制手机地址'}</button>
           </div>
-          <p className="settingsHint">手机打开后使用房间密钥登录。默认只开放快捷动作，不直接开放远程终端。</p>
+          <p className="settingsHint">手机打开后使用房间密钥登录。基础模式可以查看设备和操作网关快捷动作，不开放跨设备命令。</p>
         </section>
         <section className="panel settingsAdvanced">
           <div className="panelHeader">
@@ -1798,6 +1800,24 @@ function SettingsView({
           </div>
           {showAdvanced ? (
             <div className="advancedStack">
+              <section className="advancedBox agentGatewayBox">
+                <div className="advancedBoxHeader">
+                  <div>
+                    <h3>Agent Gateway</h3>
+                    <p>{state.agentGatewayEnabled ? '手机端已开放预设命令、任意命令和跨设备执行。' : '手机端命令和智能体入口已收起，只保留基础控制面板。'}</p>
+                  </div>
+                  <span className={`statusPill ${state.agentGatewayEnabled ? 'permission' : 'offline'}`}>
+                    {state.agentGatewayEnabled ? '高级模式' : '已关闭'}
+                  </span>
+                </div>
+                <p>开启后，手机可以把命令发送到网关本机或已信任设备；关闭后，手机快捷动作只作用于网关本机。</p>
+                <div className="rowActions">
+                  <button className={state.agentGatewayEnabled ? 'secondary' : 'primary'} onClick={() => onSetAgentGateway(!state.agentGatewayEnabled)}>
+                    {state.agentGatewayEnabled ? <ShieldOff size={16} /> : <ShieldCheck size={16} />}
+                    {state.agentGatewayEnabled ? '关闭 Agent Gateway' : '开启 Agent Gateway'}
+                  </button>
+                </div>
+              </section>
               <section className="advancedBox">
                 <h3>Local API</h3>
                 <p>仅本机监听：127.0.0.1:{state.networkInfo.localApiPort}</p>
@@ -2692,6 +2712,7 @@ function App() {
           state={state}
           onUpdateName={(name) => run(() => api.updateName(name))}
           onSetAutoTrust={(enabled) => run(() => api.setAutoTrust(enabled))}
+          onSetAgentGateway={(enabled) => run(() => api.setAgentGateway(enabled))}
           onSetWebRtcConfig={(config) => run(() => api.setWebRtcConfig(config))}
           onConnectManualPeer={(address) => run(() => api.connectManualPeer(address))}
           onRemoveManualPeer={(address) => run(() => api.removeManualPeer(address))}

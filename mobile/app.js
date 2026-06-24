@@ -40,8 +40,12 @@ function allDevices() {
   return state.data?.devices || [];
 }
 
+function agentGatewayEnabled() {
+  return Boolean(state.data?.agentGateway?.enabled);
+}
+
 function writableDevices() {
-  return allDevices().filter((device) => device.isOnline && device.trusted && !device.readOnly);
+  return allDevices().filter((device) => device.isOnline && device.trusted && !device.readOnly && (agentGatewayEnabled() || device.isSelf));
 }
 
 function selectedDevices() {
@@ -70,6 +74,7 @@ function syncSelection() {
 }
 
 function setTab(tab) {
+  if (tab === 'command' && !agentGatewayEnabled()) tab = 'home';
   state.tab = tab;
   localStorage.setItem('lch.mobile.tab.v1', tab);
   render();
@@ -135,6 +140,7 @@ async function loadAll() {
     state.actions = actions;
     state.commandPresets = commandPresets || mobileState.commandPresets || [];
     state.tasks = tasks;
+    if (!agentGatewayEnabled() && state.tab === 'command') state.tab = 'home';
     syncSelection();
     render();
   } catch (error) {
@@ -173,6 +179,10 @@ async function runAction(actionId) {
 
 async function runCommand(event) {
   event?.preventDefault();
+  if (!agentGatewayEnabled()) {
+    setError('Agent Gateway 未开启，手机端命令入口已收起');
+    return;
+  }
   const command = String(state.commandText || document.querySelector('#commandText')?.value || '').trim();
   if (!command) {
     setError('先输入要执行的命令');
@@ -223,6 +233,7 @@ function clearDevices() {
 }
 
 function applyPreset(id) {
+  if (!agentGatewayEnabled()) return;
   const preset = state.commandPresets.find((item) => item.id === id);
   if (!preset) return;
   state.commandText = preset.command;
@@ -290,7 +301,7 @@ function render() {
     <nav class="bottomNav" aria-label="移动端导航">
       ${renderNavButton('home', '总览')}
       ${renderNavButton('devices', '设备')}
-      ${renderNavButton('command', '命令')}
+      ${agentGatewayEnabled() ? renderNavButton('command', '命令') : ''}
       ${renderNavButton('tasks', '任务')}
     </nav>
   `;
@@ -303,13 +314,16 @@ function renderNavButton(tab, label) {
 
 function renderTabContent(onlineCount, selectedCount) {
   if (state.tab === 'devices') return renderDevices();
-  if (state.tab === 'command') return renderCommand();
+  if (state.tab === 'command') return agentGatewayEnabled() ? renderCommand() : renderHome(onlineCount, selectedCount);
   if (state.tab === 'tasks') return renderTasks();
   return renderHome(onlineCount, selectedCount);
 }
 
 function renderHome(onlineCount, selectedCount) {
   const gateway = gatewayDevice();
+  const gatewayStatus = agentGatewayEnabled()
+    ? `当前目标：${targetText(state.commandMode)}`
+    : '基础模式：快捷动作只作用于网关本机，命令入口已收起。';
   return `
     <section class="summaryPanel">
       <div class="summaryGrid">
@@ -327,6 +341,7 @@ function renderHome(onlineCount, selectedCount) {
         </div>
       </div>
       <p>网关：${escapeHtml(gateway?.displayName || gateway?.name || state.data.device.name)}。手机通过这台电脑操作同一房间里的可信设备。</p>
+      <p>${escapeHtml(gatewayStatus)}</p>
     </section>
 
     <section class="panelBlock">
@@ -341,7 +356,7 @@ function renderHome(onlineCount, selectedCount) {
       </div>
     </section>
 
-    <section class="panelBlock">
+    ${agentGatewayEnabled() ? `<section class="panelBlock">
       <div class="panelTitle">
         <div>
           <h2>语音入口</h2>
@@ -353,7 +368,7 @@ function renderHome(onlineCount, selectedCount) {
         <button id="clearVoiceButton" class="secondary">清空</button>
       </div>
       <p class="helperText">如果浏览器不支持语音识别，点“命令”里的输入框，用手机键盘自带麦克风也可以。</p>
-    </section>
+    </section>` : ''}
   `;
 }
 
@@ -363,7 +378,7 @@ function renderDevices() {
       <div class="panelTitle">
         <div>
           <h2>选择目标设备</h2>
-          <p>未选择时默认使用全部在线可信设备</p>
+          <p>${agentGatewayEnabled() ? '未选择时默认使用全部在线可信设备' : '基础模式只允许手机操作网关本机；跨设备执行需要在桌面端开启 Agent Gateway'}</p>
         </div>
       </div>
       <div class="toolbarLine">
@@ -378,6 +393,19 @@ function renderDevices() {
 }
 
 function renderCommand() {
+  if (!agentGatewayEnabled()) {
+    return `
+      <section class="panelBlock">
+        <div class="panelTitle">
+          <div>
+            <h2>命令和智能体</h2>
+            <p>Agent Gateway 未开启，手机端命令入口已收起。</p>
+          </div>
+        </div>
+        <p class="helperText">需要在桌面端设置 / 系统 / 高级工具中手动开启。</p>
+      </section>
+    `;
+  }
   return `
     <section class="panelBlock commandPanel">
       <div class="panelTitle">
@@ -536,6 +564,10 @@ function bindEvents() {
 }
 
 function startVoice() {
+  if (!agentGatewayEnabled()) {
+    setError('Agent Gateway 未开启，语音命令入口已收起');
+    return;
+  }
   const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!Recognition) {
     state.voiceText = '当前浏览器不支持 Web Speech。可以打开命令页，用手机键盘麦克风输入。';
