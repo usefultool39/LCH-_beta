@@ -1431,6 +1431,11 @@ function serveMobileAsset(pathname: string, res: http.ServerResponse) {
   res.end(fs.readFileSync(target));
 }
 
+function isMobileBrowser(req: http.IncomingMessage) {
+  const ua = String(req.headers['user-agent'] || '').toLowerCase();
+  return /\b(android|iphone|ipod|ipad|mobile|windows phone)\b/.test(ua);
+}
+
 function emitState() {
   const next = appStateView();
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -4029,6 +4034,11 @@ function startWebServer() {
       const server = http.createServer(async (req, res) => {
         const url = new URL(req.url || '/', `http://127.0.0.1:${port}`);
         try {
+          if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/' && isMobileBrowser(req)) {
+            res.writeHead(302, { Location: '/mobile/' });
+            res.end();
+            return;
+          }
           if ((req.method === 'GET' || req.method === 'HEAD') && (url.pathname === '/mobile' || url.pathname.startsWith('/mobile/'))) {
             serveMobileAsset(url.pathname, res);
             return;
