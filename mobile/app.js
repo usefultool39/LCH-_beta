@@ -1,5 +1,6 @@
 const app = document.querySelector('#app');
 const storeKey = 'lch.mobile.session.v1';
+const agentTargetKey = 'lch.mobile.agentTarget.v1';
 
 const state = {
   token: localStorage.getItem(storeKey) || '',
@@ -7,6 +8,7 @@ const state = {
   actions: [],
   commandPresets: [],
   agentSession: null,
+  agentTargetId: localStorage.getItem(agentTargetKey) || '',
   selected: new Set(),
   tasks: [],
   tab: localStorage.getItem('lch.mobile.tab.v1') || 'home',
@@ -64,6 +66,22 @@ function selectedIds() {
 
 function gatewayDevice() {
   return allDevices().find((device) => device.isSelf) || state.data?.device || null;
+}
+
+function agentTargetDevices() {
+  return allDevices().filter((device) => device.trusted && (device.isSelf || device.isOnline));
+}
+
+function selectedAgentDevice() {
+  return agentTargetDevices().find((device) => device.id === state.agentTargetId) || gatewayDevice();
+}
+
+function syncAgentTarget() {
+  const devices = agentTargetDevices();
+  if (devices.some((device) => device.id === state.agentTargetId)) return;
+  const available = devices.find((device) => device.agent?.cliAvailable) || devices[0] || gatewayDevice();
+  state.agentTargetId = available?.id || state.data?.device?.id || '';
+  if (state.agentTargetId) localStorage.setItem(agentTargetKey, state.agentTargetId);
 }
 
 function syncSelection() {
@@ -146,8 +164,9 @@ async function loadAll() {
     state.actions = actions;
     state.commandPresets = commandPresets || mobileState.commandPresets || [];
     state.tasks = tasks;
+    syncAgentTarget();
     if (agentGatewayEnabled()) {
-      state.agentSession = await api('/agent/state').catch(() => null);
+      state.agentSession = await api(`/agent/state?targetDeviceId=${encodeURIComponent(state.agentTargetId)}`).catch(() => null);
     } else {
       state.agentSession = null;
     }
@@ -232,11 +251,19 @@ async function startAgent() {
     setError('Agent Gateway 未开启，智能体入口已收起');
     return;
   }
+  const target = selectedAgentDevice();
+  if (!target?.agent?.cliAvailable) {
+    setError(`${target?.displayName || target?.name || '这台设备'} 还没有配置 CLI 智能体`);
+    return;
+  }
   state.agentBusy = true;
   state.error = '';
   render();
   try {
-    state.agentSession = await api('/agent/start', { method: 'POST' });
+    state.agentSession = await api('/agent/start', {
+      method: 'POST',
+      body: { targetDeviceId: state.agentTargetId }
+    });
     state.tab = 'agent';
     render();
   } catch (error) {
@@ -252,7 +279,10 @@ async function stopAgent() {
   state.error = '';
   render();
   try {
-    state.agentSession = await api('/agent/stop', { method: 'POST' });
+    state.agentSession = await api('/agent/stop', {
+      method: 'POST',
+      body: { targetDeviceId: state.agentTargetId }
+    });
   } catch (error) {
     setError(error);
   } finally {
@@ -265,6 +295,11 @@ async function sendAgentText(text) {
   const value = String(text || '').trim();
   if (!value) {
     setError('先输入要发送给智能体的内容');
+    return;
+  }
+  const target = selectedAgentDevice();
+  if (!target?.agent?.cliAvailable) {
+    setError(`${target?.displayName || target?.name || '这台设备'} 还没有配置 CLI 智能体；请先选择已配置的笔记本`);
     return;
   }
   if (!state.agentSession?.active) {
@@ -289,7 +324,7 @@ async function sendAgentText(text) {
   try {
     state.agentSession = await api('/agent/input', {
       method: 'POST',
-      body: { text: value }
+      body: { text: value, targetDeviceId: state.agentTargetId }
     });
     state.agentInput = '';
   } catch (error) {
@@ -320,6 +355,18 @@ function selectAllDevices() {
 
 function clearDevices() {
   state.selected.clear();
+  render();
+}
+
+async function selectAgentTarget(deviceId) {
+  state.agentTargetId = String(deviceId || '');
+  localStorage.setItem(agentTargetKey, state.agentTargetId);
+  state.agentInput = '';
+  state.error = '';
+  render();
+  if (agentGatewayEnabled()) {
+    state.agentSession = await api(`/agent/state?targetDeviceId=${encodeURIComponent(state.agentTargetId)}`).catch(() => null);
+  }
   render();
 }
 
@@ -501,19 +548,31 @@ function renderAgent() {
   const busy = Boolean(session.busy || state.agentBusy);
   const statusClass = busy || active ? 'ok' : session.status === 'failed' ? 'warn' : '';
   const statusText = busy ? '处理中' : active ? '已连接' : '未连接';
-  const messages = agentMessages(session);
+  const target = selectedAgentDevice();
+  const targetName = target?.displayName || target?.name || session.targetName || state.data.device.name;
+  const targetAvailable = Boolean(target?.agent?.cliAvailable);
+  const messages = targetAvailable ? agentMessages(session) : [{
+    id: 'agent-unavailable',
+    role: 'assistant',
+    text: `${targetName} 当前还没有配置 CLI 智能体。你可以先选择已配置的笔记本进行对话；以后这台设备装好 Claude Code / MiniMax-M3 后再开放。`,
+    createdAt: Date.now()
+  }];
   return `
     <section class="panelBlock controlPanel">
       <div class="controlTop">
         <div>
           <h2>控制终端</h2>
-          <p>${escapeHtml(session.model || state.data?.agentGateway?.agent?.model || 'MiniMax-M3')} · ${escapeHtml(state.data.device.name)}</p>
+          <p>${escapeHtml(session.model || state.data?.agentGateway?.agent?.model || 'MiniMax-M3')} · 当前设备：${escapeHtml(targetName)}</p>
         </div>
         <div class="controlStatus">
           <span class="statusPill ${statusClass}">${statusText}</span>
-          <button type="button" id="startAgentButton" class="secondary" ${active || busy ? 'disabled' : ''}>连接</button>
+          <button type="button" id="startAgentButton" class="secondary" ${!targetAvailable || active || busy ? 'disabled' : ''}>连接</button>
           <button type="button" id="stopAgentButton" class="secondary" ${!active || busy ? 'disabled' : ''}>停止</button>
         </div>
+      </div>
+
+      <div class="agentTargetList">
+        ${agentTargetDevices().map(renderAgentTarget).join('')}
       </div>
 
       <div class="chatWindow" aria-live="polite">
@@ -526,12 +585,25 @@ function renderAgent() {
           <textarea id="agentInput" rows="2" placeholder="例如：你好，帮我看看这个项目现在运行到哪了">${escapeHtml(state.agentInput)}</textarea>
         </label>
         <div class="composerActions">
-          <button type="button" id="agentVoiceButton" class="secondary" ${state.agentVoiceListening || busy ? 'disabled' : ''}>${state.agentVoiceListening ? '正在听' : '语音'}</button>
-          <button type="submit" class="primaryWide" ${busy ? 'disabled' : ''}>${busy ? '等待' : '发送'}</button>
+          <button type="button" id="agentVoiceButton" class="secondary" ${!targetAvailable || state.agentVoiceListening || busy ? 'disabled' : ''}>${state.agentVoiceListening ? '正在听' : '语音'}</button>
+          <button type="submit" class="primaryWide" ${!targetAvailable || busy ? 'disabled' : ''}>${busy ? '等待' : '发送'}</button>
         </div>
       </form>
-      <p class="helperText">这是手机主控制入口。输入内容会发送给这台电脑上的 Claude Code / MiniMax-M3；语音按钮不可用时，可以点输入框使用手机键盘自带麦克风。</p>
+      <p class="helperText">${targetAvailable ? '输入内容会发送给所选设备上的 Claude Code / MiniMax-M3。语音不可用时，可以点输入框使用手机键盘自带麦克风。' : '这台设备还没有配置 CLI 智能体；请选择已配置的笔记本，或先在目标设备上配置 Claude Code / MiniMax-M3。'}</p>
     </section>
+  `;
+}
+
+function renderAgentTarget(device) {
+  const active = device.id === state.agentTargetId;
+  const onlineClass = device.isOnline ? 'ok' : 'warn';
+  const available = Boolean(device.agent?.cliAvailable);
+  return `
+    <button type="button" class="agentTarget ${active ? 'active' : ''}" data-agent-target="${escapeAttr(device.id)}">
+      <strong>${escapeHtml(device.displayName || device.name)}</strong>
+      <span class="statusPill ${onlineClass}">${device.isOnline ? '在线' : '离线'}</span>
+      <small>${escapeHtml(device.code || code(device.id, device.isSelf ? 'THIS' : 'PC'))} · ${available ? 'CLI 可用' : 'CLI 未配置'}</small>
+    </button>
   `;
 }
 
@@ -643,6 +715,7 @@ function renderTasks() {
 function renderDevice(device) {
   const disabled = !device.isOnline || !device.trusted || device.readOnly;
   const checked = state.selected.has(device.id) && !disabled;
+  const agentLabel = device.agent?.cliAvailable ? 'CLI 可用' : 'CLI 未配置';
   return `
     <label class="deviceRow ${disabled ? 'disabled' : ''}">
       <input type="checkbox" data-device="${escapeAttr(device.id)}" ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''} />
@@ -652,7 +725,7 @@ function renderDevice(device) {
           <span class="statusPill ${device.isOnline ? 'ok' : 'warn'}">${device.isOnline ? '在线' : '离线'}</span>
         </div>
         <p>${escapeHtml(device.code || code(device.id, device.isSelf ? 'THIS' : 'PC'))} · ${escapeHtml(device.address || '本机')}</p>
-        <p>版本 ${escapeHtml(device.appVersion || 'unknown')} · ${device.trusted ? '已信任' : '待信任'}${device.readOnly ? ' · 只读' : ''}</p>
+        <p>版本 ${escapeHtml(device.appVersion || 'unknown')} · ${device.trusted ? '已信任' : '待信任'}${device.readOnly ? ' · 只读' : ''} · ${agentLabel}</p>
       </div>
     </label>
   `;
@@ -729,6 +802,9 @@ function bindEvents() {
   });
   document.querySelectorAll('[data-device]').forEach((input) => {
     input.addEventListener('change', (event) => toggleDevice(event.currentTarget.dataset.device, event.currentTarget.checked));
+  });
+  document.querySelectorAll('[data-agent-target]').forEach((button) => {
+    button.addEventListener('click', () => selectAgentTarget(button.dataset.agentTarget));
   });
   document.querySelectorAll('[data-action]').forEach((button) => {
     button.addEventListener('click', () => runAction(button.dataset.action));

@@ -540,6 +540,44 @@ pre {
   background: #f8fafc;
 }
 
+.agentTargetList {
+  display: grid;
+  gap: 8px;
+}
+
+.agentTarget {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 8px;
+  align-items: center;
+  min-height: 56px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--text);
+  background: #ffffff;
+  text-align: left;
+}
+
+.agentTarget.active {
+  border-color: #5eead4;
+  background: #ecfeff;
+}
+
+.agentTarget strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.agentTarget small {
+  grid-column: 1 / -1;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
 .chatBubble {
   display: grid;
   gap: 5px;

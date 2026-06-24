@@ -110,6 +110,8 @@ type MobileAgentMessage = {
 type MobileAgentSession = {
   id: string;
   ownerToken: string;
+  targetDeviceId: string;
+  targetName: string;
   title: string;
   command: string;
   model: string;
@@ -915,7 +917,18 @@ function mobilePeerView(peer: ReturnType<typeof serializePeers>[number]) {
     uiStatus: peer.uiStatus,
     favorite: peer.favorite,
     readOnly: peer.readOnly,
+    agent: mobileDeviceAgentView(false),
     isSelf: false
+  };
+}
+
+function mobileDeviceAgentView(isSelf: boolean) {
+  return {
+    cliAvailable: Boolean(isSelf && state.agentGatewayEnabled),
+    model: MOBILE_AGENT_MODEL,
+    title: MOBILE_AGENT_TITLE,
+    status: isSelf && state.agentGatewayEnabled ? 'ready' : 'not-configured',
+    label: isSelf && state.agentGatewayEnabled ? 'CLI 已配置' : 'CLI 未配置'
   };
 }
 
@@ -981,6 +994,7 @@ function mobileStateView() {
         uiStatus: 'online' as const,
         favorite: true,
         readOnly: false,
+        agent: mobileDeviceAgentView(true),
         isSelf: true
       },
       ...peersView
@@ -1001,8 +1015,7 @@ function pruneMobileSessions() {
   for (const [token, sessionItem] of mobileSessions) {
     if (now - sessionItem.lastSeenAt > MOBILE_SESSION_TTL_MS) {
       mobileSessions.delete(token);
-      stopMobileAgentSession(token, 'logout');
-      mobileAgentSessions.delete(token);
+      stopMobileAgentSessionsForToken(token, 'logout');
     }
   }
 }
@@ -1023,6 +1036,54 @@ function requireMobileSession(req: http.IncomingMessage) {
   const sessionItem = mobileSessionFromRequest(req);
   if (!sessionItem) throw new Error('Mobile session unauthorized');
   return sessionItem;
+}
+
+function mobileAgentTargetId(req: http.IncomingMessage, body?: any) {
+  const fromBody = String(body?.targetDeviceId || body?.deviceId || '').trim();
+  if (fromBody) return fromBody;
+  try {
+    const url = new URL(req.url || '/', `http://127.0.0.1:${webPort || DEFAULT_WEB_PORT}`);
+    return String(url.searchParams.get('targetDeviceId') || url.searchParams.get('deviceId') || '').trim() || state.device.id;
+  } catch {
+    return state.device.id;
+  }
+}
+
+function mobileAgentSessionKey(token: string, targetDeviceId: string) {
+  return `${token}:${targetDeviceId}`;
+}
+
+function stopMobileAgentSessionsForToken(token: string, reason = 'closed') {
+  for (const [key, sessionItem] of mobileAgentSessions) {
+    if (sessionItem.ownerToken !== token) continue;
+    stopMobileAgentSession(key, reason);
+    mobileAgentSessions.delete(key);
+  }
+}
+
+function mobileAgentTarget(targetDeviceId?: string) {
+  const id = String(targetDeviceId || '').trim() || state.device.id;
+  if (id === state.device.id) {
+    return {
+      id: state.device.id,
+      name: state.device.name,
+      isSelf: true,
+      cliAvailable: state.agentGatewayEnabled,
+      reason: state.agentGatewayEnabled ? '' : 'Agent Gateway 未开启'
+    };
+  }
+  const peer = serializePeers().find((item) => item.id === id);
+  if (!peer) throw new Error('目标设备不存在');
+  if (!peer.trusted) throw new Error('目标设备未被信任');
+  if (!peer.isOnline) throw new Error('目标设备不在线');
+  if (peer.readOnly) throw new Error('目标设备是只读模式');
+  return {
+    id: peer.id,
+    name: peer.displayName || peer.name,
+    isSelf: false,
+    cliAvailable: false,
+    reason: '这台设备还没有配置手机 CLI 智能体'
+  };
 }
 
 function sanitizeMobileAgentOutput(value: string | Buffer) {
@@ -1068,6 +1129,8 @@ function serializeMobileAgentSession(sessionItem?: MobileAgentSession | null) {
   if (!sessionItem) {
     return {
       active: false,
+      targetDeviceId: state.device.id,
+      targetName: state.device.name,
       title: MOBILE_AGENT_TITLE,
       model: MOBILE_AGENT_MODEL,
       status: 'closed' as const,
@@ -1079,6 +1142,8 @@ function serializeMobileAgentSession(sessionItem?: MobileAgentSession | null) {
   return {
     active: sessionItem.status === 'starting' || sessionItem.status === 'running',
     id: sessionItem.id,
+    targetDeviceId: sessionItem.targetDeviceId,
+    targetName: sessionItem.targetName,
     title: sessionItem.title,
     command: sessionItem.command,
     model: sessionItem.model,
@@ -1096,8 +1161,18 @@ function serializeMobileAgentSession(sessionItem?: MobileAgentSession | null) {
   };
 }
 
-function mobileAgentState(token: string) {
-  return serializeMobileAgentSession(mobileAgentSessions.get(token));
+function mobileAgentState(token: string, targetDeviceId?: string) {
+  const target = mobileAgentTarget(targetDeviceId);
+  const key = mobileAgentSessionKey(token, target.id);
+  const sessionItem = mobileAgentSessions.get(key);
+  if (sessionItem) return serializeMobileAgentSession(sessionItem);
+  return {
+    ...serializeMobileAgentSession(null),
+    targetDeviceId: target.id,
+    targetName: target.name,
+    targetCliAvailable: target.cliAvailable,
+    targetReason: target.reason
+  };
 }
 
 function mobileAgentCommand() {
@@ -1109,8 +1184,8 @@ function mobileAgentCommand() {
   return { file: shell, args: ['-lc', command], command };
 }
 
-function stopMobileAgentSession(token: string, reason = 'closed') {
-  const sessionItem = mobileAgentSessions.get(token);
+function stopMobileAgentSession(sessionKey: string, reason = 'closed') {
+  const sessionItem = mobileAgentSessions.get(sessionKey);
   if (!sessionItem) return false;
   if (sessionItem.status === 'starting' || sessionItem.status === 'running') {
     sessionItem.status = reason === 'failed' ? 'failed' : 'closed';
@@ -1128,10 +1203,13 @@ function stopMobileAgentSession(token: string, reason = 'closed') {
   return true;
 }
 
-function startMobileAgentSession(req: http.IncomingMessage) {
+function startMobileAgentSession(req: http.IncomingMessage, body?: any) {
   assertAgentGatewayEnabled();
   const mobile = requireMobileSession(req);
-  const existing = mobileAgentSessions.get(mobile.token);
+  const target = mobileAgentTarget(mobileAgentTargetId(req, body));
+  if (!target.cliAvailable) throw new Error(target.reason || '目标设备没有配置 CLI 智能体');
+  const sessionKey = mobileAgentSessionKey(mobile.token, target.id);
+  const existing = mobileAgentSessions.get(sessionKey);
   if (existing && (existing.status === 'starting' || existing.status === 'running')) return serializeMobileAgentSession(existing);
 
   const shell = mobileAgentCommand();
@@ -1139,6 +1217,8 @@ function startMobileAgentSession(req: http.IncomingMessage) {
   const sessionItem: MobileAgentSession = {
     id: crypto.randomUUID(),
     ownerToken: mobile.token,
+    targetDeviceId: target.id,
+    targetName: target.name,
     title: MOBILE_AGENT_TITLE,
     command: shell.command,
     model: MOBILE_AGENT_MODEL,
@@ -1150,8 +1230,8 @@ function startMobileAgentSession(req: http.IncomingMessage) {
     updatedAt: now
   };
   addMobileAgentMessage(sessionItem, 'assistant', '已连接 Claude Code / MiniMax-M3。直接输入你想让电脑做的事，也可以用语音输入。');
-  mobileAgentSessions.set(mobile.token, sessionItem);
-  addAudit('mobile.agent.start', `${mobile.name} 启动 ${MOBILE_AGENT_TITLE}`, state.device.id, state.device.id);
+  mobileAgentSessions.set(sessionKey, sessionItem);
+  addAudit('mobile.agent.start', `${mobile.name} 启动 ${target.name} 的 ${MOBILE_AGENT_TITLE}`, state.device.id, target.id);
   return serializeMobileAgentSession(sessionItem);
 }
 
@@ -1214,10 +1294,13 @@ function runMobileAgentPrompt(prompt: string, sessionItem: MobileAgentSession) {
 async function sendMobileAgentInput(body: any, req: http.IncomingMessage) {
   assertAgentGatewayEnabled();
   const mobile = requireMobileSession(req);
-  let sessionItem = mobileAgentSessions.get(mobile.token);
+  const target = mobileAgentTarget(mobileAgentTargetId(req, body));
+  if (!target.cliAvailable) throw new Error(target.reason || '目标设备没有配置 CLI 智能体');
+  const sessionKey = mobileAgentSessionKey(mobile.token, target.id);
+  let sessionItem = mobileAgentSessions.get(sessionKey);
   if (!sessionItem || sessionItem.status === 'closed' || sessionItem.status === 'failed') {
-    startMobileAgentSession(req);
-    sessionItem = mobileAgentSessions.get(mobile.token);
+    startMobileAgentSession(req, body);
+    sessionItem = mobileAgentSessions.get(sessionKey);
   }
   if (!sessionItem || (sessionItem.status !== 'starting' && sessionItem.status !== 'running')) throw new Error('Agent 会话未启动');
   if (sessionItem.busy) throw new Error('上一条消息还在处理中，请稍等');
@@ -1236,7 +1319,7 @@ async function sendMobileAgentInput(body: any, req: http.IncomingMessage) {
     pendingMessage.pending = false;
     sessionItem.exitCode = result.code;
     sessionItem.signal = result.signal;
-    addAudit('mobile.agent.input', `${mobile.name} 输入 ${text.slice(0, 80)}`, state.device.id, state.device.id);
+    addAudit('mobile.agent.input', `${mobile.name} 输入 ${text.slice(0, 80)}`, state.device.id, target.id);
   } catch (error: any) {
     pendingMessage.role = 'error';
     pendingMessage.text = error?.message || String(error);
@@ -1422,8 +1505,7 @@ async function handleMobileApi(pathname: string, method: string, body: any, req:
     const sessionItem = mobileSessionFromRequest(req);
     if (sessionItem) {
       mobileSessions.delete(sessionItem.token);
-      stopMobileAgentSession(sessionItem.token, 'logout');
-      mobileAgentSessions.delete(sessionItem.token);
+      stopMobileAgentSessionsForToken(sessionItem.token, 'logout');
     }
     return true;
   }
@@ -1434,14 +1516,15 @@ async function handleMobileApi(pathname: string, method: string, body: any, req:
   if (method === 'GET' && pathname === '/mobile-api/tasks') return state.tasks.slice(0, 30).map(mobileTaskView);
   if (method === 'GET' && pathname === '/mobile-api/agent/state') {
     assertAgentGatewayEnabled();
-    return mobileAgentState(mobile.token);
+    return mobileAgentState(mobile.token, mobileAgentTargetId(req));
   }
-  if (method === 'POST' && pathname === '/mobile-api/agent/start') return startMobileAgentSession(req);
+  if (method === 'POST' && pathname === '/mobile-api/agent/start') return startMobileAgentSession(req, body);
   if (method === 'POST' && pathname === '/mobile-api/agent/input') return sendMobileAgentInput(body, req);
   if (method === 'POST' && pathname === '/mobile-api/agent/stop') {
     assertAgentGatewayEnabled();
-    stopMobileAgentSession(mobile.token);
-    return mobileAgentState(mobile.token);
+    const target = mobileAgentTarget(mobileAgentTargetId(req, body));
+    stopMobileAgentSession(mobileAgentSessionKey(mobile.token, target.id));
+    return mobileAgentState(mobile.token, target.id);
   }
   if (method === 'POST' && pathname === '/mobile-api/actions/run') return runMobileAction(body, req);
   if (method === 'POST' && pathname === '/mobile-api/commands/run') return runMobileCommand(body, req);
