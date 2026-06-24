@@ -1,12 +1,19 @@
 const app = document.querySelector('#app');
 const storeKey = 'lch.mobile.session.v1';
+
 const state = {
   token: localStorage.getItem(storeKey) || '',
   data: null,
   actions: [],
+  commandPresets: [],
   selected: new Set(),
   tasks: [],
+  tab: localStorage.getItem('lch.mobile.tab.v1') || 'home',
+  commandText: '',
+  commandMode: 'selected',
+  cwd: '',
   voiceText: '',
+  voiceListening: false,
   busy: false,
   error: ''
 };
@@ -29,14 +36,43 @@ function code(value, prefix) {
   return `${prefix}-${String(value || '').replace(/-/g, '').slice(0, 6).toUpperCase() || '------'}`;
 }
 
-function onlineDevices() {
-  return (state.data?.devices || []).filter((device) => device.isOnline && device.trusted && !device.readOnly);
+function allDevices() {
+  return state.data?.devices || [];
+}
+
+function writableDevices() {
+  return allDevices().filter((device) => device.isOnline && device.trusted && !device.readOnly);
+}
+
+function selectedDevices() {
+  const writable = writableDevices();
+  const selected = writable.filter((device) => state.selected.has(device.id));
+  return selected.length ? selected : writable;
 }
 
 function selectedIds() {
-  const online = onlineDevices();
-  const selected = online.filter((device) => state.selected.has(device.id)).map((device) => device.id);
-  return selected.length ? selected : online.map((device) => device.id);
+  return selectedDevices().map((device) => device.id);
+}
+
+function gatewayDevice() {
+  return allDevices().find((device) => device.isSelf) || state.data?.device || null;
+}
+
+function syncSelection() {
+  const writable = writableDevices();
+  const writableIds = new Set(writable.map((device) => device.id));
+  for (const id of Array.from(state.selected)) {
+    if (!writableIds.has(id)) state.selected.delete(id);
+  }
+  if (!state.selected.size) {
+    for (const device of writable) state.selected.add(device.id);
+  }
+}
+
+function setTab(tab) {
+  state.tab = tab;
+  localStorage.setItem('lch.mobile.tab.v1', tab);
+  render();
 }
 
 function setError(error) {
@@ -48,6 +84,7 @@ async function login(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   state.busy = true;
+  state.error = '';
   renderLogin();
   try {
     const result = await api('/login', {
@@ -88,17 +125,17 @@ async function loadAll() {
     return;
   }
   try {
-    const [mobileState, actions, tasks] = await Promise.all([
+    const [mobileState, actions, commandPresets, tasks] = await Promise.all([
       api('/state'),
       api('/actions'),
+      api('/commands/presets'),
       api('/tasks')
     ]);
     state.data = mobileState;
     state.actions = actions;
+    state.commandPresets = commandPresets || mobileState.commandPresets || [];
     state.tasks = tasks;
-    for (const device of onlineDevices()) {
-      if (!state.selected.size) state.selected.add(device.id);
-    }
+    syncSelection();
     render();
   } catch (error) {
     state.token = '';
@@ -109,11 +146,13 @@ async function loadAll() {
 }
 
 async function runAction(actionId) {
+  const action = state.actions.find((item) => item.id === actionId);
   const peerIds = selectedIds();
   if (!peerIds.length) {
     setError('没有可操作的在线设备');
     return;
   }
+  if (action?.danger && !window.confirm(`确认执行「${action.label}」？`)) return;
   state.busy = true;
   state.error = '';
   render();
@@ -122,6 +161,41 @@ async function runAction(actionId) {
       method: 'POST',
       body: { actionId, peerIds }
     });
+    state.tab = 'tasks';
+    await loadAll();
+  } catch (error) {
+    setError(error);
+  } finally {
+    state.busy = false;
+    render();
+  }
+}
+
+async function runCommand(event) {
+  event?.preventDefault();
+  const command = String(state.commandText || document.querySelector('#commandText')?.value || '').trim();
+  if (!command) {
+    setError('先输入要执行的命令');
+    return;
+  }
+  const target = targetText(state.commandMode);
+  if (!window.confirm(`确认在「${target}」执行这条命令？\n\n${command.slice(0, 300)}`)) return;
+  state.busy = true;
+  state.error = '';
+  render();
+  try {
+    await api('/commands/run', {
+      method: 'POST',
+      body: {
+        command,
+        mode: state.commandMode,
+        peerIds: selectedIds(),
+        cwd: state.cwd,
+        confirm: true
+      }
+    });
+    state.commandText = command;
+    state.tab = 'tasks';
     await loadAll();
   } catch (error) {
     setError(error);
@@ -137,19 +211,51 @@ function toggleDevice(id, checked) {
   render();
 }
 
+function selectAllDevices() {
+  state.selected.clear();
+  for (const device of writableDevices()) state.selected.add(device.id);
+  render();
+}
+
+function clearDevices() {
+  state.selected.clear();
+  render();
+}
+
+function applyPreset(id) {
+  const preset = state.commandPresets.find((item) => item.id === id);
+  if (!preset) return;
+  state.commandText = preset.command;
+  state.commandMode = preset.mode || 'selected';
+  state.tab = 'command';
+  render();
+  document.querySelector('#commandText')?.focus();
+}
+
 function renderLogin() {
+  app.className = 'appShell loginShell';
   app.innerHTML = `
     <section class="loginPanel">
-      <div>
-        <h1>手机控制台</h1>
-        <p>连接 ${location.hostname || 'Lan Control Hub'} 的移动网关</p>
+      <div class="brandBlock">
+        <span class="brandMark">LCH</span>
+        <div>
+          <h1>手机控制台</h1>
+          <p>连接 ${escapeHtml(location.hostname || 'Lan Control Hub')} 的移动网关</p>
+        </div>
       </div>
       ${state.error ? `<p class="errorText">${escapeHtml(state.error)}</p>` : ''}
       <form class="formGrid" id="loginForm">
-        <input name="name" autocomplete="nickname" placeholder="手机名称，例如 iPhone" />
-        <input name="secret" type="password" autocomplete="current-password" required placeholder="房间密钥" />
-        <button type="submit" ${state.busy ? 'disabled' : ''}>${state.busy ? '正在登录' : '登录'}</button>
+        <label>
+          <span>手机名称</span>
+          <input name="name" autocomplete="nickname" placeholder="例如 iPhone / 我的手机" />
+        </label>
+        <label>
+          <span>房间密钥</span>
+          <input name="secret" type="password" autocomplete="current-password" required placeholder="电脑设置页里的房间密钥" />
+        </label>
+        <button type="submit" ${state.busy ? 'disabled' : ''}>${state.busy ? '正在登录' : '登录控制台'}</button>
       </form>
+      <p class="helperText">名称只是手机显示名；房间密钥和三台电脑加入房间用的是同一个密钥。</p>
     </section>
   `;
   document.querySelector('#loginForm')?.addEventListener('submit', login);
@@ -160,125 +266,280 @@ function render() {
     renderLogin();
     return;
   }
-  const devices = state.data.devices || [];
+  app.className = 'appShell';
+  const devices = allDevices();
   const onlineCount = devices.filter((device) => device.isOnline).length;
+  const selectedCount = selectedDevices().length;
   app.innerHTML = `
-    <section class="topPanel">
-      <div class="topLine">
-        <div>
-          <h1>${escapeHtml(state.data.home.name || 'Lan Control Hub')}</h1>
-          <div class="roomMeta">
-            <span class="pill">${escapeHtml(code(state.data.home.id, 'ROOM'))}</span>
-            <span class="pill ok">${onlineCount}/${devices.length} 在线</span>
-            <span class="pill">网关 ${escapeHtml(code(state.data.device.id, 'PC'))}</span>
-          </div>
-        </div>
-        <button class="secondary" id="logoutButton">退出</button>
-      </div>
-      <div class="statusLine">
-        <span>Web ${state.data.network.webPort}</span>
-        <span>版本 ${escapeHtml(state.data.appVersion)}</span>
-      </div>
-      ${state.error ? `<p class="errorText">${escapeHtml(state.error)}</p>` : ''}
-    </section>
-
-    <div class="sectionTitle">
-      <h2>设备</h2>
-      <button class="secondary" id="refreshButton">刷新</button>
-    </div>
-    <section class="deviceList">
-      ${devices.map(renderDevice).join('')}
-    </section>
-
-    <section class="actionPanel">
+    <header class="appHeader">
       <div>
-        <h2>快捷动作</h2>
-        <p>未选择设备时默认操作全部在线可信设备</p>
+        <h1>${escapeHtml(state.data.home.name || 'Lan Control Hub')}</h1>
+        <p>${escapeHtml(state.data.device.name)} · ${escapeHtml(state.data.appVersion)}</p>
+      </div>
+      <div class="headerActions">
+        <button class="ghostButton" id="refreshButton">刷新</button>
+        <button class="ghostButton" id="logoutButton">退出</button>
+      </div>
+    </header>
+
+    <main class="contentArea">
+      ${state.error ? `<p class="errorBanner">${escapeHtml(state.error)}</p>` : ''}
+      ${renderTabContent(onlineCount, selectedCount)}
+    </main>
+
+    <nav class="bottomNav" aria-label="移动端导航">
+      ${renderNavButton('home', '总览')}
+      ${renderNavButton('devices', '设备')}
+      ${renderNavButton('command', '命令')}
+      ${renderNavButton('tasks', '任务')}
+    </nav>
+  `;
+  bindEvents();
+}
+
+function renderNavButton(tab, label) {
+  return `<button class="${state.tab === tab ? 'active' : ''}" data-tab="${tab}">${label}</button>`;
+}
+
+function renderTabContent(onlineCount, selectedCount) {
+  if (state.tab === 'devices') return renderDevices();
+  if (state.tab === 'command') return renderCommand();
+  if (state.tab === 'tasks') return renderTasks();
+  return renderHome(onlineCount, selectedCount);
+}
+
+function renderHome(onlineCount, selectedCount) {
+  const gateway = gatewayDevice();
+  return `
+    <section class="summaryPanel">
+      <div class="summaryGrid">
+        <div>
+          <strong>${onlineCount}/${allDevices().length}</strong>
+          <span>在线设备</span>
+        </div>
+        <div>
+          <strong>${selectedCount}</strong>
+          <span>当前目标</span>
+        </div>
+        <div>
+          <strong>${escapeHtml(state.data.home.code || code(state.data.home.id, 'ROOM'))}</strong>
+          <span>房间代码</span>
+        </div>
+      </div>
+      <p>网关：${escapeHtml(gateway?.displayName || gateway?.name || state.data.device.name)}。手机通过这台电脑操作同一房间里的可信设备。</p>
+    </section>
+
+    <section class="panelBlock">
+      <div class="panelTitle">
+        <div>
+          <h2>快捷动作</h2>
+          <p>适合不用输入命令的常用操作</p>
+        </div>
       </div>
       <div class="actionGrid">
         ${state.actions.map(renderAction).join('')}
       </div>
     </section>
 
-    <section class="voicePanel">
-      <div>
-        <h2>语音</h2>
-        <p>${escapeHtml(state.voiceText || '按住说话后，识别结果会匹配到一个快捷动作')}</p>
+    <section class="panelBlock">
+      <div class="panelTitle">
+        <div>
+          <h2>语音入口</h2>
+          <p>${escapeHtml(state.voiceText || '说“查看网络”“锁屏”“运行 hostname”等')}</p>
+        </div>
       </div>
       <div class="voiceControls">
-        <button id="voiceButton" class="secondary">语音识别</button>
+        <button id="voiceButton" class="primaryWide" ${state.voiceListening ? 'disabled' : ''}>${state.voiceListening ? '正在听' : '开始语音'}</button>
         <button id="clearVoiceButton" class="secondary">清空</button>
       </div>
+      <p class="helperText">如果浏览器不支持语音识别，点“命令”里的输入框，用手机键盘自带麦克风也可以。</p>
     </section>
+  `;
+}
 
-    <section class="taskPanel">
-      <div class="sectionTitle">
-        <h2>最近任务</h2>
-        <button class="secondary" id="refreshTasksButton">刷新</button>
+function renderDevices() {
+  return `
+    <section class="panelBlock">
+      <div class="panelTitle">
+        <div>
+          <h2>选择目标设备</h2>
+          <p>未选择时默认使用全部在线可信设备</p>
+        </div>
       </div>
-      <div class="taskList">
-        ${state.tasks.length ? state.tasks.map(renderTask).join('') : '<p>还没有任务</p>'}
+      <div class="toolbarLine">
+        <button class="secondary" id="selectAllButton">全选</button>
+        <button class="secondary" id="clearDevicesButton">清空</button>
+      </div>
+      <div class="deviceList">
+        ${allDevices().map(renderDevice).join('')}
       </div>
     </section>
   `;
+}
 
-  document.querySelector('#logoutButton')?.addEventListener('click', logout);
-  document.querySelector('#refreshButton')?.addEventListener('click', loadAll);
-  document.querySelector('#refreshTasksButton')?.addEventListener('click', loadAll);
-  document.querySelectorAll('[data-device]').forEach((input) => {
-    input.addEventListener('change', (event) => toggleDevice(event.currentTarget.dataset.device, event.currentTarget.checked));
-  });
-  document.querySelectorAll('[data-action]').forEach((button) => {
-    button.addEventListener('click', () => runAction(button.dataset.action));
-  });
-  document.querySelector('#voiceButton')?.addEventListener('click', startVoice);
-  document.querySelector('#clearVoiceButton')?.addEventListener('click', () => {
-    state.voiceText = '';
-    render();
-  });
+function renderCommand() {
+  return `
+    <section class="panelBlock commandPanel">
+      <div class="panelTitle">
+        <div>
+          <h2>命令和智能体</h2>
+          <p>手机输入命令，由网关电脑执行，或通过 LCH 转发到其它设备</p>
+        </div>
+      </div>
+
+      <div class="modeSwitch" role="group" aria-label="命令目标">
+        ${renderModeButton('gateway', '网关本机')}
+        ${renderModeButton('selected', '选中设备')}
+        ${renderModeButton('all', '全部在线')}
+      </div>
+
+      <form id="commandForm" class="commandForm">
+        <label>
+          <span>命令</span>
+          <textarea id="commandText" rows="5" placeholder="例如：hostname">${escapeHtml(state.commandText)}</textarea>
+        </label>
+        <label>
+          <span>工作目录，可不填</span>
+          <input id="cwdInput" value="${escapeAttr(state.cwd)}" placeholder="默认使用用户目录" />
+        </label>
+        <div class="voiceControls">
+          <button type="button" id="voiceButton" class="secondary">${state.voiceListening ? '正在听' : '语音填入'}</button>
+          <button type="submit" class="primaryWide" ${state.busy ? 'disabled' : ''}>${state.busy ? '执行中' : '执行命令'}</button>
+        </div>
+      </form>
+      <p class="helperText">执行前会再次确认。不要在手机端粘贴不可信脚本；高风险操作建议先在电脑端确认。</p>
+    </section>
+
+    <section class="panelBlock">
+      <div class="panelTitle">
+        <div>
+          <h2>常用预设</h2>
+          <p>点一下填入命令框，确认后再执行</p>
+        </div>
+      </div>
+      <div class="presetList">
+        ${state.commandPresets.map(renderPreset).join('')}
+      </div>
+    </section>
+  `;
+}
+
+function renderModeButton(mode, label) {
+  return `<button type="button" class="${state.commandMode === mode ? 'active' : ''}" data-mode="${mode}">${label}</button>`;
+}
+
+function renderTasks() {
+  return `
+    <section class="panelBlock">
+      <div class="panelTitle">
+        <div>
+          <h2>最近任务</h2>
+          <p>显示手机、桌面端和 CLI 触发的最近命令</p>
+        </div>
+        <button class="secondary" id="refreshTasksButton">刷新</button>
+      </div>
+      <div class="taskList">
+        ${state.tasks.length ? state.tasks.map(renderTask).join('') : '<p class="emptyText">还没有任务</p>'}
+      </div>
+    </section>
+  `;
 }
 
 function renderDevice(device) {
   const disabled = !device.isOnline || !device.trusted || device.readOnly;
   const checked = state.selected.has(device.id) && !disabled;
   return `
-    <label class="deviceRow">
+    <label class="deviceRow ${disabled ? 'disabled' : ''}">
       <input type="checkbox" data-device="${escapeAttr(device.id)}" ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''} />
-      <div>
+      <div class="deviceBody">
         <div class="deviceName">
           <strong>${escapeHtml(device.displayName || device.name)}</strong>
-          <span class="pill ${device.isOnline ? 'ok' : 'warn'}">${device.isOnline ? '在线' : '离线'}</span>
+          <span class="statusPill ${device.isOnline ? 'ok' : 'warn'}">${device.isOnline ? '在线' : '离线'}</span>
         </div>
-        <div class="deviceMeta">
-          <span>${escapeHtml(code(device.id, device.isSelf ? 'THIS' : 'PC'))} · ${escapeHtml(device.address || '本机')}</span>
-          <span>版本 ${escapeHtml(device.appVersion || 'unknown')} · ${device.trusted ? '已信任' : '待信任'}${device.readOnly ? ' · 只读' : ''}</span>
-        </div>
+        <p>${escapeHtml(device.code || code(device.id, device.isSelf ? 'THIS' : 'PC'))} · ${escapeHtml(device.address || '本机')}</p>
+        <p>版本 ${escapeHtml(device.appVersion || 'unknown')} · ${device.trusted ? '已信任' : '待信任'}${device.readOnly ? ' · 只读' : ''}</p>
       </div>
     </label>
   `;
 }
 
 function renderAction(action) {
-  return `<button class="${action.danger ? 'danger' : ''}" data-action="${escapeAttr(action.id)}" ${state.busy ? 'disabled' : ''}>${escapeHtml(action.label)}</button>`;
+  return `
+    <button class="actionButton ${action.danger ? 'danger' : ''}" data-action="${escapeAttr(action.id)}" ${state.busy ? 'disabled' : ''}>
+      <strong>${escapeHtml(action.label)}</strong>
+      <span>${action.danger ? '高风险，需确认' : '点按后执行'}</span>
+    </button>
+  `;
+}
+
+function renderPreset(preset) {
+  return `
+    <button class="presetButton" data-preset="${escapeAttr(preset.id)}">
+      <strong>${escapeHtml(preset.label)}</strong>
+      <span>${escapeHtml(preset.description || preset.command)}</span>
+    </button>
+  `;
 }
 
 function renderTask(task) {
-  const output = [task.output, task.errorOutput].filter(Boolean).join('\n').slice(-2600);
+  const output = [task.output, task.errorOutput].filter(Boolean).join('\n').slice(-3000);
   return `
     <article class="taskItem">
       <header>
-        <strong>${escapeHtml(task.peerName || task.peerId || '任务')}</strong>
-        <span class="pill ${task.status === 'completed' ? 'ok' : task.status === 'failed' ? 'warn' : ''}">${escapeHtml(task.status)}</span>
+        <div>
+          <strong>${escapeHtml(task.peerName || task.peerId || '任务')}</strong>
+          <p>${escapeHtml(task.command || '')}</p>
+        </div>
+        <span class="statusPill ${task.status === 'completed' ? 'ok' : task.status === 'failed' ? 'warn' : ''}">${escapeHtml(task.status)}</span>
       </header>
-      ${output ? `<pre>${escapeHtml(output)}</pre>` : ''}
+      ${output ? `<pre>${escapeHtml(output)}</pre>` : '<p class="emptyText">等待输出</p>'}
     </article>
   `;
+}
+
+function bindEvents() {
+  document.querySelector('#refreshButton')?.addEventListener('click', loadAll);
+  document.querySelector('#logoutButton')?.addEventListener('click', logout);
+  document.querySelector('#refreshTasksButton')?.addEventListener('click', loadAll);
+  document.querySelector('#selectAllButton')?.addEventListener('click', selectAllDevices);
+  document.querySelector('#clearDevicesButton')?.addEventListener('click', clearDevices);
+  document.querySelector('#commandForm')?.addEventListener('submit', runCommand);
+  document.querySelector('#commandText')?.addEventListener('input', (event) => {
+    state.commandText = event.currentTarget.value;
+  });
+  document.querySelector('#cwdInput')?.addEventListener('input', (event) => {
+    state.cwd = event.currentTarget.value;
+  });
+  document.querySelector('#voiceButton')?.addEventListener('click', startVoice);
+  document.querySelector('#clearVoiceButton')?.addEventListener('click', () => {
+    state.voiceText = '';
+    render();
+  });
+  document.querySelectorAll('[data-tab]').forEach((button) => {
+    button.addEventListener('click', () => setTab(button.dataset.tab));
+  });
+  document.querySelectorAll('[data-mode]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.commandMode = button.dataset.mode;
+      render();
+    });
+  });
+  document.querySelectorAll('[data-device]').forEach((input) => {
+    input.addEventListener('change', (event) => toggleDevice(event.currentTarget.dataset.device, event.currentTarget.checked));
+  });
+  document.querySelectorAll('[data-action]').forEach((button) => {
+    button.addEventListener('click', () => runAction(button.dataset.action));
+  });
+  document.querySelectorAll('[data-preset]').forEach((button) => {
+    button.addEventListener('click', () => applyPreset(button.dataset.preset));
+  });
 }
 
 function startVoice() {
   const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!Recognition) {
-    state.voiceText = '当前浏览器不支持 Web Speech，可以先用快捷动作';
+    state.voiceText = '当前浏览器不支持 Web Speech。可以打开命令页，用手机键盘麦克风输入。';
+    state.tab = 'command';
     render();
     return;
   }
@@ -286,18 +547,39 @@ function startVoice() {
   recognition.lang = 'zh-CN';
   recognition.interimResults = false;
   recognition.maxAlternatives = 1;
+  state.voiceListening = true;
+  state.voiceText = '正在听...';
+  render();
   recognition.onresult = (event) => {
     const text = event.results?.[0]?.[0]?.transcript || '';
-    state.voiceText = text;
-    const action = matchVoiceAction(text);
-    render();
-    if (action && window.confirm(`执行「${action.label}」？`)) runAction(action.id);
+    state.voiceListening = false;
+    handleVoiceText(text);
   };
   recognition.onerror = (event) => {
+    state.voiceListening = false;
     state.voiceText = `语音识别失败：${event.error || 'unknown'}`;
     render();
   };
+  recognition.onend = () => {
+    state.voiceListening = false;
+    render();
+  };
   recognition.start();
+}
+
+function handleVoiceText(text) {
+  const action = matchVoiceAction(text);
+  if (action) {
+    state.voiceText = `识别：${text}。匹配到快捷动作「${action.label}」。`;
+    render();
+    if (window.confirm(`执行「${action.label}」？`)) runAction(action.id);
+    return;
+  }
+  state.commandMode = inferVoiceMode(text);
+  state.commandText = voiceToCommand(text);
+  state.voiceText = `识别：${text}。已填入命令框。`;
+  state.tab = 'command';
+  render();
 }
 
 function matchVoiceAction(text) {
@@ -305,8 +587,33 @@ function matchVoiceAction(text) {
   if (value.includes('锁') || value.includes('锁屏')) return state.actions.find((action) => action.id === 'lock-screen');
   if (value.includes('下载')) return state.actions.find((action) => action.id === 'open-downloads');
   if (value.includes('网络') || value.includes('ip')) return state.actions.find((action) => action.id === 'network-info');
-  if (value.includes('测试') || value.includes('在线') || value.includes('主机')) return state.actions.find((action) => action.id === 'connection-test');
+  if (value.includes('测试') || value.includes('在线')) return state.actions.find((action) => action.id === 'connection-test');
   return null;
+}
+
+function inferVoiceMode(text) {
+  const value = String(text || '').toLowerCase();
+  if (value.includes('网关') || value.includes('本机') || value.includes('这台电脑')) return 'gateway';
+  if (value.includes('全部') || value.includes('所有') || value.includes('每台') || value.includes('三台')) return 'all';
+  return 'selected';
+}
+
+function voiceToCommand(text) {
+  let value = String(text || '').trim();
+  value = value.replace(/[，。；：！]/g, ' ');
+  value = value.replace(/^(帮我|请|麻烦)?(在)?(网关|本机|这台电脑|全部设备|所有设备|选中设备)?(上)?(执行|运行|输入|命令)\s*/i, '');
+  if (value.includes('主机名')) return 'hostname';
+  if (value.includes('当前用户')) return 'whoami';
+  if (value.includes('查看网关 CLI') || value.includes('查看网关 cli')) {
+    return 'codex --version; claude --version; opencode --version; gemini --version';
+  }
+  return value || 'hostname';
+}
+
+function targetText(mode) {
+  if (mode === 'gateway') return gatewayDevice()?.displayName || gatewayDevice()?.name || '网关本机';
+  if (mode === 'all') return `全部在线可信设备（${writableDevices().length} 台）`;
+  return `选中设备（${selectedDevices().length} 台）`;
 }
 
 function escapeHtml(value) {
@@ -326,6 +633,6 @@ function escapeAttr(value) {
 window.addEventListener('focus', loadAll);
 setInterval(() => {
   if (state.token) loadAll();
-}, 5000);
+}, 7000);
 
 loadAll();

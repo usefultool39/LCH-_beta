@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.15.0
+
+- Redesign the mobile Web/PWA console with phone-first navigation for overview, devices, commands, and tasks.
+- Add a mobile command API that can run confirmed commands on the gateway computer, selected trusted devices, or all online trusted devices.
+- Add mobile command presets for device checks, gateway CLI availability, and all-device hostname checks.
+- Improve mobile voice input so recognized speech either matches a confirmed quick action or fills the command box with an inferred target mode.
+- Document the phone-to-gateway-to-LCH workflow, including Tailscale access, shared room keys, voice input limits, and command safety rules.
+
 ## v0.14.1
 
 - Simplify desktop device capability labels so the workbench shows user-facing actions instead of internal capability names.

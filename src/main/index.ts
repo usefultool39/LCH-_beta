@@ -159,6 +159,30 @@ const MOBILE_ACTIONS = [
   { id: 'open-downloads', label: '打开下载目录', danger: false },
   { id: 'lock-screen', label: '锁定屏幕', danger: true }
 ] as const;
+const MOBILE_COMMAND_MAX_LENGTH = 2000;
+const MOBILE_COMMAND_PRESETS = [
+  {
+    id: 'check-devices',
+    label: '检查设备状态',
+    description: '在目标设备上输出 hostname 和当前用户。',
+    command: 'hostname; whoami',
+    mode: 'selected'
+  },
+  {
+    id: 'gateway-cli',
+    label: '查看网关 CLI',
+    description: '查看这台网关电脑上常见智能体 CLI 是否可用。',
+    command: 'codex --version; claude --version; opencode --version; gemini --version',
+    mode: 'gateway'
+  },
+  {
+    id: 'all-hostnames',
+    label: '全部主机名',
+    description: '让所有在线可信设备输出主机名。',
+    command: 'hostname',
+    mode: 'all'
+  }
+] as const;
 
 process.on('uncaughtException', (error) => {
   logRuntimeError('uncaughtException', error);
@@ -862,6 +886,8 @@ function mobileTaskView(task: TaskRecord) {
     id: task.id,
     peerId: task.peerId,
     peerName: task.peerName,
+    command: task.command,
+    cwd: task.cwd,
     status: task.status,
     exitCode: task.exitCode,
     startedAt: task.startedAt,
@@ -914,6 +940,7 @@ function mobileStateView() {
       ...peersView
     ],
     actions: MOBILE_ACTIONS,
+    commandPresets: MOBILE_COMMAND_PRESETS,
     tasks: state.tasks.slice(0, 30).map(mobileTaskView),
     network: {
       webPort,
@@ -1028,6 +1055,61 @@ async function runMobileAction(body: any, req: http.IncomingMessage) {
   return { action, taskIds };
 }
 
+function cleanMobileCommand(input: unknown) {
+  const command = String(input || '').replace(/\0/g, '').trim();
+  if (!command) throw new Error('命令不能为空');
+  if (command.length > MOBILE_COMMAND_MAX_LENGTH) throw new Error(`命令过长，最多 ${MOBILE_COMMAND_MAX_LENGTH} 个字符`);
+  return command;
+}
+
+function mobileCommandMode(input: unknown) {
+  const mode = String(input || 'selected').trim();
+  if (mode === 'gateway' || mode === 'selected' || mode === 'all') return mode;
+  throw new Error('未知的移动端命令目标');
+}
+
+async function runMobileCommand(body: any, req: http.IncomingMessage) {
+  const sessionItem = requireMobileSession(req);
+  const command = cleanMobileCommand(body?.command);
+  const mode = mobileCommandMode(body?.mode);
+  const cwd = body?.cwd ? String(body.cwd).trim().slice(0, 500) : undefined;
+  if (body?.confirm !== true) throw new Error('移动端命令需要确认');
+  const taskIds: string[] = [];
+
+  if (mode === 'gateway' || mode === 'all') {
+    const result = startLocalTask(state.device.id, sessionItem.name, {
+      requestId: crypto.randomUUID(),
+      command,
+      cwd
+    });
+    taskIds.push(result.remoteTaskId);
+  }
+
+  if (mode === 'selected' || mode === 'all') {
+    const targets = mobileTargets(mode === 'selected' ? body?.peerIds : []);
+    const shouldRunSelf = mode === 'selected' && targets.some((target) => target.isSelf);
+    if (shouldRunSelf) {
+      const result = startLocalTask(state.device.id, sessionItem.name, {
+        requestId: crypto.randomUUID(),
+        command,
+        cwd
+      });
+      taskIds.push(result.remoteTaskId);
+    }
+    const peerIds = targets.filter((target) => !target.isSelf).map((target) => target.id);
+    if (peerIds.length) {
+      const result = queueRemoteCommand(peerIds, command, cwd);
+      taskIds.push(...result.taskIds);
+    }
+    if (!taskIds.length) throw new Error('没有可执行命令的目标设备');
+  }
+
+  addAudit('mobile.command', `${sessionItem.name} 在 ${mode} 执行 ${command.slice(0, 120)}`, state.device.id, state.device.id);
+  saveState();
+  emitState();
+  return { mode, taskIds };
+}
+
 async function handleMobileApi(pathname: string, method: string, body: any, req: http.IncomingMessage) {
   if (method === 'GET' && pathname === '/mobile-api/status') {
     return {
@@ -1058,8 +1140,10 @@ async function handleMobileApi(pathname: string, method: string, body: any, req:
   requireMobileSession(req);
   if (method === 'GET' && pathname === '/mobile-api/state') return mobileStateView();
   if (method === 'GET' && pathname === '/mobile-api/actions') return MOBILE_ACTIONS;
+  if (method === 'GET' && pathname === '/mobile-api/commands/presets') return MOBILE_COMMAND_PRESETS;
   if (method === 'GET' && pathname === '/mobile-api/tasks') return state.tasks.slice(0, 30).map(mobileTaskView);
   if (method === 'POST' && pathname === '/mobile-api/actions/run') return runMobileAction(body, req);
+  if (method === 'POST' && pathname === '/mobile-api/commands/run') return runMobileCommand(body, req);
   throw new Error('Unknown Mobile API route');
 }
 
@@ -2522,6 +2606,54 @@ async function runRemoteCommand(peerIds: string[], command: string, cwd?: string
     saveState();
     emitState();
   }
+  return { taskIds };
+}
+
+function queueRemoteCommand(peerIds: string[], command: string, cwd?: string) {
+  const cleanCommand = String(command || '').trim();
+  if (!cleanCommand) throw new Error('命令不能为空');
+  const targetIds = peerIds.length
+    ? peerIds
+    : serializePeers().filter((peer) => peer.isOnline && peer.trusted && !peer.readOnly).map((peer) => peer.id);
+  if (!targetIds.length) throw new Error('没有可用的目标设备');
+  const taskIds: string[] = [];
+  for (const peerId of targetIds) {
+    assertPeerWritable(peerId);
+    const peer = getTrustedPeer(peerId);
+    const localTaskId = crypto.randomUUID();
+    const task: TaskRecord = {
+      id: localTaskId,
+      peerId,
+      peerName: peer.name,
+      command: cleanCommand,
+      cwd,
+      status: 'pending',
+      output: '',
+      errorOutput: '',
+      startedAt: Date.now(),
+      origin: 'remote'
+    };
+    state.tasks.unshift(task);
+    taskIds.push(localTaskId);
+    sendControl<{ remoteTaskId: string }>(peerId, 'task.run', {
+      requestId: localTaskId,
+      command: cleanCommand,
+      cwd
+    }).then((result) => {
+      task.remoteTaskId = result.remoteTaskId;
+      task.status = 'running';
+      saveState();
+      emitState();
+    }).catch((err: any) => {
+      task.status = 'failed';
+      task.errorOutput = err?.message || String(err);
+      task.endedAt = Date.now();
+      saveState();
+      emitState();
+    });
+  }
+  saveState();
+  emitState();
   return { taskIds };
 }
 
