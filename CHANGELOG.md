@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.15.1
+
+- Finalize the current mobile-command checkpoint with consolidated local documentation and release metadata.
+- Add a stage summary for the current LAN, mobile, Tailscale gateway, CLI/Agent, safety, and testing scope.
+- Keep runtime behavior unchanged from v0.15.0 while preparing a clean latest release for user testing.
+
 ## v0.15.0
 
 - Redesign the mobile Web/PWA console with phone-first navigation for overview, devices, commands, and tasks.
