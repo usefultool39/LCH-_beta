@@ -493,6 +493,113 @@ pre {
   gap: 12px;
 }
 
+.controlPanel {
+  min-height: calc(100dvh - 132px);
+  align-content: start;
+}
+
+.controlTop {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+}
+
+.controlTop h2 {
+  font-size: 18px;
+}
+
+.controlTop p {
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.controlStatus {
+  display: grid;
+  grid-template-columns: auto auto auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.controlStatus button {
+  min-height: 32px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.chatWindow {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-height: 310px;
+  max-height: calc(100dvh - 330px);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: #f8fafc;
+}
+
+.chatBubble {
+  display: grid;
+  gap: 5px;
+  width: fit-content;
+  max-width: 88%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: #ffffff;
+}
+
+.chatBubble span {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.chatBubble p {
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.chatBubble.user {
+  justify-self: end;
+  border-color: #99f6e4;
+  background: #ccfbf1;
+}
+
+.chatBubble.error {
+  border-color: #fecaca;
+  background: #fff7f7;
+}
+
+.chatBubble.error p {
+  color: #991b1b;
+}
+
+.chatBubble.pending p {
+  color: var(--muted);
+}
+
+.chatComposer {
+  display: grid;
+  gap: 9px;
+}
+
+.chatComposer textarea {
+  min-height: 68px;
+  max-height: 138px;
+}
+
+.composerActions {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 9px;
+}
+
 .agentOutput {
   min-height: 240px;
   max-height: 42vh;
@@ -556,7 +663,14 @@ pre {
 
   .toolbarLine,
   .voiceControls,
-  .agentControls {
+  .agentControls,
+  .controlTop,
+  .controlStatus {
     grid-template-columns: 1fr;
+  }
+
+  .chatWindow {
+    min-height: 280px;
+    max-height: calc(100dvh - 350px);
   }
 }

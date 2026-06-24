@@ -99,6 +99,14 @@ type TerminalSession = {
   pty?: PtyProcessLike;
 };
 
+type MobileAgentMessage = {
+  id: string;
+  role: 'user' | 'assistant' | 'system' | 'error';
+  text: string;
+  createdAt: number;
+  pending?: boolean;
+};
+
 type MobileAgentSession = {
   id: string;
   ownerToken: string;
@@ -108,6 +116,8 @@ type MobileAgentSession = {
   backend: TerminalBackend;
   status: 'starting' | 'running' | 'closed' | 'failed';
   output: string;
+  messages: MobileAgentMessage[];
+  busy?: boolean;
   startedAt: number;
   updatedAt: number;
   endedAt?: number;
@@ -175,6 +185,8 @@ let nutRuntime: Promise<any> | null = null;
 const MOBILE_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const MOBILE_AGENT_OUTPUT_MAX_BYTES = 96 * 1024;
 const MOBILE_AGENT_INPUT_MAX_LENGTH = 4000;
+const MOBILE_AGENT_HISTORY_MAX_MESSAGES = 24;
+const MOBILE_AGENT_MESSAGE_TIMEOUT_MS = 4 * 60 * 1000;
 const MOBILE_AGENT_MODEL = 'MiniMax-M3';
 const MOBILE_AGENT_TITLE = 'Claude Code / MiniMax-M3';
 const MOBILE_ACTIONS = [
@@ -1027,6 +1039,31 @@ function appendMobileAgentOutput(sessionItem: MobileAgentSession, chunk: string 
   sessionItem.updatedAt = Date.now();
 }
 
+function rebuildMobileAgentOutput(sessionItem: MobileAgentSession) {
+  const output = sessionItem.messages.map((message) => {
+    const label = message.role === 'user' ? '你' : message.role === 'error' ? '错误' : message.role === 'system' ? '系统' : '智能体';
+    return `${label}: ${message.text}`;
+  }).join('\n\n');
+  sessionItem.output = output.length > MOBILE_AGENT_OUTPUT_MAX_BYTES ? output.slice(-MOBILE_AGENT_OUTPUT_MAX_BYTES) : output;
+  sessionItem.updatedAt = Date.now();
+}
+
+function addMobileAgentMessage(sessionItem: MobileAgentSession, role: MobileAgentMessage['role'], text: string, pending = false) {
+  const message: MobileAgentMessage = {
+    id: crypto.randomUUID(),
+    role,
+    text: String(text || '').trim(),
+    createdAt: Date.now(),
+    pending
+  };
+  sessionItem.messages.push(message);
+  if (sessionItem.messages.length > MOBILE_AGENT_HISTORY_MAX_MESSAGES) {
+    sessionItem.messages.splice(0, sessionItem.messages.length - MOBILE_AGENT_HISTORY_MAX_MESSAGES);
+  }
+  rebuildMobileAgentOutput(sessionItem);
+  return message;
+}
+
 function serializeMobileAgentSession(sessionItem?: MobileAgentSession | null) {
   if (!sessionItem) {
     return {
@@ -1034,6 +1071,8 @@ function serializeMobileAgentSession(sessionItem?: MobileAgentSession | null) {
       title: MOBILE_AGENT_TITLE,
       model: MOBILE_AGENT_MODEL,
       status: 'closed' as const,
+      busy: false,
+      messages: [],
       output: ''
     };
   }
@@ -1045,6 +1084,8 @@ function serializeMobileAgentSession(sessionItem?: MobileAgentSession | null) {
     model: sessionItem.model,
     backend: sessionItem.backend,
     status: sessionItem.status,
+    busy: Boolean(sessionItem.busy),
+    messages: sessionItem.messages,
     output: sessionItem.output,
     startedAt: sessionItem.startedAt,
     updatedAt: sessionItem.updatedAt,
@@ -1060,7 +1101,7 @@ function mobileAgentState(token: string) {
 }
 
 function mobileAgentCommand() {
-  const command = `claude --model ${MOBILE_AGENT_MODEL}`;
+  const command = `claude -p --model ${MOBILE_AGENT_MODEL} --max-budget-usd 0.5 --output-format text`;
   if (process.platform === 'win32') {
     return { file: 'cmd.exe', args: ['/d', '/s', '/c', command], command };
   }
@@ -1073,9 +1114,10 @@ function stopMobileAgentSession(token: string, reason = 'closed') {
   if (!sessionItem) return false;
   if (sessionItem.status === 'starting' || sessionItem.status === 'running') {
     sessionItem.status = reason === 'failed' ? 'failed' : 'closed';
+    sessionItem.busy = false;
     sessionItem.endedAt = Date.now();
     sessionItem.updatedAt = sessionItem.endedAt;
-    appendMobileAgentOutput(sessionItem, `\n[${reason === 'logout' ? '手机已退出，Agent 会话已关闭' : 'Agent 会话已关闭'}]\n`);
+    addMobileAgentMessage(sessionItem, 'system', reason === 'logout' ? '手机已退出，Agent 会话已关闭' : 'Agent 会话已关闭');
   }
   try {
     if (sessionItem.pty) sessionItem.pty.kill();
@@ -1101,96 +1143,111 @@ function startMobileAgentSession(req: http.IncomingMessage) {
     command: shell.command,
     model: MOBILE_AGENT_MODEL,
     backend: 'spawn',
-    status: 'starting',
+    status: 'running',
     output: '',
+    messages: [],
     startedAt: now,
     updatedAt: now
   };
-  appendMobileAgentOutput(sessionItem, `[启动 ${MOBILE_AGENT_TITLE}]\n${shell.command}\n\n`);
+  addMobileAgentMessage(sessionItem, 'assistant', '已连接 Claude Code / MiniMax-M3。直接输入你想让电脑做的事，也可以用语音输入。');
   mobileAgentSessions.set(mobile.token, sessionItem);
-
-  const nodePty = getNodePty();
-  if (nodePty) {
-    try {
-      const pty = nodePty.spawn(shell.file, shell.args, {
-        name: 'xterm-256color',
-        cols: 100,
-        rows: 28,
-        cwd: os.homedir(),
-        env: {
-          ...process.env,
-          TERM: process.env.TERM || 'xterm-256color',
-          COLORTERM: process.env.COLORTERM || 'truecolor',
-          NO_COLOR: '1'
-        }
-      });
-      sessionItem.backend = 'pty';
-      sessionItem.pty = pty;
-      sessionItem.status = 'running';
-      pty.onData((chunk) => appendMobileAgentOutput(sessionItem, chunk));
-      pty.onExit((event) => {
-        sessionItem.status = event.exitCode === 0 ? 'closed' : 'failed';
-        sessionItem.exitCode = event.exitCode ?? null;
-        sessionItem.signal = event.signal ?? null;
-        sessionItem.endedAt = Date.now();
-        sessionItem.updatedAt = sessionItem.endedAt;
-        appendMobileAgentOutput(sessionItem, `\n[Agent 会话已结束：${sessionItem.exitCode ?? 'unknown'}]\n`);
-      });
-      addAudit('mobile.agent.start', `${mobile.name} 启动 ${MOBILE_AGENT_TITLE}`, state.device.id, state.device.id);
-      return serializeMobileAgentSession(sessionItem);
-    } catch (error: any) {
-      logRuntimeError('mobile.agent.pty.open', error);
-      appendMobileAgentOutput(sessionItem, `PTY 不可用，已降级到基础进程：${error?.message || String(error)}\n`);
-    }
-  }
-
-  const child = spawn(shell.file, shell.args, {
-    cwd: os.homedir(),
-    shell: false,
-    windowsHide: true,
-    env: {
-      ...process.env,
-      NO_COLOR: '1'
-    }
-  });
-  sessionItem.backend = 'spawn';
-  sessionItem.child = child;
-  sessionItem.status = 'running';
-  child.stdout.on('data', (chunk) => appendMobileAgentOutput(sessionItem, chunk));
-  child.stderr.on('data', (chunk) => appendMobileAgentOutput(sessionItem, chunk));
-  child.on('error', (error) => {
-    sessionItem.status = 'failed';
-    sessionItem.error = error?.message || String(error);
-    sessionItem.endedAt = Date.now();
-    sessionItem.updatedAt = sessionItem.endedAt;
-    appendMobileAgentOutput(sessionItem, `\n[Agent 启动失败：${sessionItem.error}]\n`);
-    logRuntimeError('mobile.agent.child.error', error);
-  });
-  child.on('close', (code, signal) => {
-    sessionItem.status = code === 0 ? 'closed' : 'failed';
-    sessionItem.exitCode = code;
-    sessionItem.signal = signal;
-    sessionItem.endedAt = Date.now();
-    sessionItem.updatedAt = sessionItem.endedAt;
-    appendMobileAgentOutput(sessionItem, `\n[Agent 会话已结束：${code ?? 'unknown'}]\n`);
-  });
   addAudit('mobile.agent.start', `${mobile.name} 启动 ${MOBILE_AGENT_TITLE}`, state.device.id, state.device.id);
   return serializeMobileAgentSession(sessionItem);
 }
 
-function sendMobileAgentInput(body: any, req: http.IncomingMessage) {
+function buildMobileAgentPrompt(text: string) {
+  return `Respond in Chinese, concise. You are Claude Code running on the user's Windows PC through a mobile control console. User: ${text}`;
+}
+
+function runMobileAgentPrompt(prompt: string, sessionItem: MobileAgentSession) {
+  const command = mobileAgentCommand();
+  const child = process.platform === 'win32'
+    ? spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', `${command.command} $env:LCH_PROMPT`], {
+      cwd: os.homedir(),
+      windowsHide: true,
+      env: { ...process.env, NO_COLOR: '1', LCH_PROMPT: prompt }
+    })
+    : spawn('claude', ['-p', '--model', MOBILE_AGENT_MODEL, '--max-budget-usd', '0.5', '--output-format', 'text', prompt], {
+      cwd: os.homedir(),
+      shell: false,
+      env: { ...process.env, NO_COLOR: '1' }
+    });
+  sessionItem.child = child;
+  return new Promise<{ text: string; code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        child.kill();
+      } catch {
+        // Process may already be gone.
+      }
+    }, MOBILE_AGENT_MESSAGE_TIMEOUT_MS);
+    child.stdout.on('data', (chunk) => { stdout += sanitizeMobileAgentOutput(chunk); });
+    child.stderr.on('data', (chunk) => { stderr += sanitizeMobileAgentOutput(chunk); });
+    child.on('error', (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on('close', (code, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (timedOut) {
+        reject(new Error('智能体响应超时，请稍后重试或把任务拆小一点'));
+        return;
+      }
+      if (code !== 0) {
+        reject(new Error((stderr || stdout || `Claude Code 退出码 ${code}`).trim()));
+        return;
+      }
+      resolve({ text: (stdout || stderr || '没有返回内容').trim(), code, signal });
+    });
+  });
+}
+
+async function sendMobileAgentInput(body: any, req: http.IncomingMessage) {
   assertAgentGatewayEnabled();
   const mobile = requireMobileSession(req);
-  const sessionItem = mobileAgentSessions.get(mobile.token);
+  let sessionItem = mobileAgentSessions.get(mobile.token);
+  if (!sessionItem || sessionItem.status === 'closed' || sessionItem.status === 'failed') {
+    startMobileAgentSession(req);
+    sessionItem = mobileAgentSessions.get(mobile.token);
+  }
   if (!sessionItem || (sessionItem.status !== 'starting' && sessionItem.status !== 'running')) throw new Error('Agent 会话未启动');
+  if (sessionItem.busy) throw new Error('上一条消息还在处理中，请稍等');
   const text = String(body?.text || '').replace(/\0/g, '').trim();
   if (!text) throw new Error('输入不能为空');
   if (text.length > MOBILE_AGENT_INPUT_MAX_LENGTH) throw new Error(`输入过长，最多 ${MOBILE_AGENT_INPUT_MAX_LENGTH} 个字符`);
-  appendMobileAgentOutput(sessionItem, `\n> ${text}\n`);
-  if (sessionItem.pty) sessionItem.pty.write(`${text}\r`);
-  else if (sessionItem.child) sessionItem.child.stdin.write(`${text}\n`);
+  const prompt = buildMobileAgentPrompt(text);
+  addMobileAgentMessage(sessionItem, 'user', text);
+  const pendingMessage = addMobileAgentMessage(sessionItem, 'assistant', '正在处理...', true);
+  sessionItem.busy = true;
+  sessionItem.status = 'running';
   sessionItem.updatedAt = Date.now();
-  addAudit('mobile.agent.input', `${mobile.name} 输入 ${text.slice(0, 80)}`, state.device.id, state.device.id);
+  try {
+    const result = await runMobileAgentPrompt(prompt, sessionItem);
+    pendingMessage.text = result.text;
+    pendingMessage.pending = false;
+    sessionItem.exitCode = result.code;
+    sessionItem.signal = result.signal;
+    addAudit('mobile.agent.input', `${mobile.name} 输入 ${text.slice(0, 80)}`, state.device.id, state.device.id);
+  } catch (error: any) {
+    pendingMessage.role = 'error';
+    pendingMessage.text = error?.message || String(error);
+    pendingMessage.pending = false;
+    sessionItem.error = pendingMessage.text;
+    logRuntimeError('mobile.agent.prompt', error);
+  } finally {
+    sessionItem.busy = false;
+    sessionItem.child = undefined;
+    rebuildMobileAgentOutput(sessionItem);
+  }
   return serializeMobileAgentSession(sessionItem);
 }
 

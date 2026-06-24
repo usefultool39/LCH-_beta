@@ -78,6 +78,7 @@ function syncSelection() {
 }
 
 function setTab(tab) {
+  if (tab === 'command') tab = 'agent';
   if ((tab === 'command' || tab === 'agent') && !agentGatewayEnabled()) tab = 'home';
   state.tab = tab;
   localStorage.setItem('lch.mobile.tab.v1', tab);
@@ -150,6 +151,7 @@ async function loadAll() {
     } else {
       state.agentSession = null;
     }
+    if (state.tab === 'command') state.tab = agentGatewayEnabled() ? 'agent' : 'home';
     if (!agentGatewayEnabled() && (state.tab === 'command' || state.tab === 'agent')) state.tab = 'home';
     syncSelection();
     render();
@@ -271,6 +273,18 @@ async function sendAgentText(text) {
   }
   state.agentBusy = true;
   state.error = '';
+  const currentMessages = Array.isArray(state.agentSession?.messages) ? state.agentSession.messages : [];
+  state.agentSession = {
+    ...(state.agentSession || {}),
+    active: true,
+    busy: true,
+    status: 'running',
+    messages: [
+      ...currentMessages,
+      { id: `local-user-${Date.now()}`, role: 'user', text: value, createdAt: Date.now() },
+      { id: `local-assistant-${Date.now()}`, role: 'assistant', text: '正在处理...', createdAt: Date.now(), pending: true }
+    ]
+  };
   render();
   try {
     state.agentSession = await api('/agent/input', {
@@ -313,11 +327,10 @@ function applyPreset(id) {
   if (!agentGatewayEnabled()) return;
   const preset = state.commandPresets.find((item) => item.id === id);
   if (!preset) return;
-  state.commandText = preset.command;
-  state.commandMode = preset.mode || 'selected';
-  state.tab = 'command';
+  state.agentInput = preset.command;
+  state.tab = 'agent';
   render();
-  document.querySelector('#commandText')?.focus();
+  document.querySelector('#agentInput')?.focus();
 }
 
 function renderLogin() {
@@ -377,9 +390,8 @@ function render() {
 
     <nav class="bottomNav" aria-label="移动端导航">
       ${renderNavButton('home', '总览')}
+      ${agentGatewayEnabled() ? renderNavButton('agent', '控制') : ''}
       ${renderNavButton('devices', '设备')}
-      ${agentGatewayEnabled() ? renderNavButton('agent', '智能体') : ''}
-      ${agentGatewayEnabled() ? renderNavButton('command', '命令') : ''}
       ${renderNavButton('tasks', '任务')}
     </nav>
   `;
@@ -393,7 +405,7 @@ function renderNavButton(tab, label) {
 function renderTabContent(onlineCount, selectedCount) {
   if (state.tab === 'devices') return renderDevices();
   if (state.tab === 'agent') return agentGatewayEnabled() ? renderAgent() : renderHome(onlineCount, selectedCount);
-  if (state.tab === 'command') return agentGatewayEnabled() ? renderCommand() : renderHome(onlineCount, selectedCount);
+  if (state.tab === 'command') return agentGatewayEnabled() ? renderAgent() : renderHome(onlineCount, selectedCount);
   if (state.tab === 'tasks') return renderTasks();
   return renderHome(onlineCount, selectedCount);
 }
@@ -438,15 +450,15 @@ function renderHome(onlineCount, selectedCount) {
     ${agentGatewayEnabled() ? `<section class="panelBlock">
       <div class="panelTitle">
         <div>
-          <h2>语音入口</h2>
-          <p>${escapeHtml(state.voiceText || '说“查看网络”“锁屏”“运行 hostname”等')}</p>
+          <h2>语音控制</h2>
+          <p>${escapeHtml(state.voiceText || '说出你想让电脑做的事')}</p>
         </div>
       </div>
       <div class="voiceControls">
-        <button id="voiceButton" class="primaryWide" ${state.voiceListening ? 'disabled' : ''}>${state.voiceListening ? '正在听' : '开始语音'}</button>
+        <button id="voiceButton" class="primaryWide" ${state.agentVoiceListening ? 'disabled' : ''}>${state.agentVoiceListening ? '正在听' : '开始语音'}</button>
         <button id="clearVoiceButton" class="secondary">清空</button>
       </div>
-      <p class="helperText">如果浏览器不支持语音识别，点“命令”里的输入框，用手机键盘自带麦克风也可以。</p>
+      <p class="helperText">如果浏览器不支持语音识别，点“控制”里的输入框，用手机键盘自带麦克风也可以。</p>
     </section>` : ''}
   `;
 }
@@ -486,38 +498,64 @@ function renderAgent() {
   }
   const session = state.agentSession || {};
   const active = Boolean(session.active);
-  const statusClass = active ? 'ok' : session.status === 'failed' ? 'warn' : '';
-  const output = session.output || '还没有输出。点“启动”后会打开这台电脑上的 Claude Code，并固定使用 MiniMax-M3。';
+  const busy = Boolean(session.busy || state.agentBusy);
+  const statusClass = busy || active ? 'ok' : session.status === 'failed' ? 'warn' : '';
+  const statusText = busy ? '处理中' : active ? '已连接' : '未连接';
+  const messages = agentMessages(session);
   return `
-    <section class="panelBlock agentPanel">
-      <div class="panelTitle">
+    <section class="panelBlock controlPanel">
+      <div class="controlTop">
         <div>
-          <h2>${escapeHtml(session.title || state.data?.agentGateway?.agent?.title || 'Claude Code / MiniMax-M3')}</h2>
-          <p>模型：${escapeHtml(session.model || state.data?.agentGateway?.agent?.model || 'MiniMax-M3')} · 目标：${escapeHtml(state.data.device.name)}</p>
+          <h2>控制终端</h2>
+          <p>${escapeHtml(session.model || state.data?.agentGateway?.agent?.model || 'MiniMax-M3')} · ${escapeHtml(state.data.device.name)}</p>
         </div>
-        <span class="statusPill ${statusClass}">${escapeHtml(session.status || 'closed')}</span>
+        <div class="controlStatus">
+          <span class="statusPill ${statusClass}">${statusText}</span>
+          <button type="button" id="startAgentButton" class="secondary" ${active || busy ? 'disabled' : ''}>连接</button>
+          <button type="button" id="stopAgentButton" class="secondary" ${!active || busy ? 'disabled' : ''}>停止</button>
+        </div>
       </div>
 
-      <div class="agentControls">
-        <button id="startAgentButton" class="primaryWide" ${active || state.agentBusy ? 'disabled' : ''}>${active ? '已启动' : '启动'}</button>
-        <button id="stopAgentButton" class="secondary" ${!active || state.agentBusy ? 'disabled' : ''}>停止</button>
-        <button id="refreshAgentButton" class="secondary">刷新</button>
+      <div class="chatWindow" aria-live="polite">
+        ${messages.map(renderAgentMessage).join('')}
       </div>
 
-      <pre class="agentOutput">${escapeHtml(output)}</pre>
-
-      <form id="agentForm" class="agentForm">
+      <form id="agentForm" class="chatComposer">
         <label>
-          <span>发送给智能体</span>
-          <textarea id="agentInput" rows="4" placeholder="例如：帮我看一下桌面项目的状态">${escapeHtml(state.agentInput)}</textarea>
+          <span>输入控制指令</span>
+          <textarea id="agentInput" rows="2" placeholder="例如：你好，帮我看看这个项目现在运行到哪了">${escapeHtml(state.agentInput)}</textarea>
         </label>
-        <div class="voiceControls">
-          <button type="button" id="agentVoiceButton" class="secondary" ${state.agentVoiceListening || state.agentBusy ? 'disabled' : ''}>${state.agentVoiceListening ? '正在听' : '语音输入'}</button>
-          <button type="submit" class="primaryWide" ${state.agentBusy ? 'disabled' : ''}>${state.agentBusy ? '发送中' : '发送'}</button>
+        <div class="composerActions">
+          <button type="button" id="agentVoiceButton" class="secondary" ${state.agentVoiceListening || busy ? 'disabled' : ''}>${state.agentVoiceListening ? '正在听' : '语音'}</button>
+          <button type="submit" class="primaryWide" ${busy ? 'disabled' : ''}>${busy ? '等待' : '发送'}</button>
         </div>
       </form>
-      <p class="helperText">这条路径只连接网关电脑上的 Claude Code。Claude Code 已按 MiniMax-M3 启动；更高风险的任意命令仍留在“命令”页。</p>
+      <p class="helperText">这是手机主控制入口。输入内容会发送给这台电脑上的 Claude Code / MiniMax-M3；语音按钮不可用时，可以点输入框使用手机键盘自带麦克风。</p>
     </section>
+  `;
+}
+
+function agentMessages(session) {
+  if (Array.isArray(session.messages) && session.messages.length) return session.messages;
+  if (session.output) {
+    return [{ id: 'legacy-output', role: 'assistant', text: session.output, createdAt: session.updatedAt || Date.now() }];
+  }
+  return [{
+    id: 'agent-empty',
+    role: 'assistant',
+    text: '这里是手机控制终端。点“连接”或直接发送一句话，我会通过 Claude Code / MiniMax-M3 帮你操作这台电脑。',
+    createdAt: Date.now()
+  }];
+}
+
+function renderAgentMessage(message) {
+  const role = message.role === 'user' ? 'user' : message.role === 'error' ? 'error' : 'assistant';
+  const label = message.role === 'user' ? '你' : message.role === 'error' ? '错误' : '智能体';
+  return `
+    <article class="chatBubble ${role} ${message.pending ? 'pending' : ''}">
+      <span>${label}</span>
+      <p>${escapeHtml(message.text || '')}</p>
+    </article>
   `;
 }
 
@@ -571,7 +609,7 @@ function renderCommand() {
       <div class="panelTitle">
         <div>
           <h2>常用预设</h2>
-          <p>点一下填入命令框，确认后再执行</p>
+          <p>点一下填入控制输入框，确认后再发送</p>
         </div>
       </div>
       <div class="presetList">
@@ -674,7 +712,7 @@ function bindEvents() {
   document.querySelector('#cwdInput')?.addEventListener('input', (event) => {
     state.cwd = event.currentTarget.value;
   });
-  document.querySelector('#voiceButton')?.addEventListener('click', startVoice);
+  document.querySelector('#voiceButton')?.addEventListener('click', startAgentVoice);
   document.querySelector('#agentVoiceButton')?.addEventListener('click', startAgentVoice);
   document.querySelector('#clearVoiceButton')?.addEventListener('click', () => {
     state.voiceText = '';
@@ -700,42 +738,6 @@ function bindEvents() {
   });
 }
 
-function startVoice() {
-  if (!agentGatewayEnabled()) {
-    setError('Agent Gateway 未开启，语音命令入口已收起');
-    return;
-  }
-  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!Recognition) {
-    state.voiceText = '当前浏览器不支持 Web Speech。可以打开命令页，用手机键盘麦克风输入。';
-    state.tab = 'command';
-    render();
-    return;
-  }
-  const recognition = new Recognition();
-  recognition.lang = 'zh-CN';
-  recognition.interimResults = false;
-  recognition.maxAlternatives = 1;
-  state.voiceListening = true;
-  state.voiceText = '正在听...';
-  render();
-  recognition.onresult = (event) => {
-    const text = event.results?.[0]?.[0]?.transcript || '';
-    state.voiceListening = false;
-    handleVoiceText(text);
-  };
-  recognition.onerror = (event) => {
-    state.voiceListening = false;
-    state.voiceText = `语音识别失败：${event.error || 'unknown'}`;
-    render();
-  };
-  recognition.onend = () => {
-    state.voiceListening = false;
-    render();
-  };
-  recognition.start();
-}
-
 function startAgentVoice() {
   if (!agentGatewayEnabled()) {
     setError('Agent Gateway 未开启，智能体语音入口已收起');
@@ -744,6 +746,7 @@ function startAgentVoice() {
   const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!Recognition) {
     state.agentInput = state.agentInput || '';
+    state.tab = 'agent';
     setError('当前浏览器不支持 Web Speech。可以点输入框，用手机键盘自带麦克风输入。');
     return;
   }
@@ -757,9 +760,10 @@ function startAgentVoice() {
     const text = event.results?.[0]?.[0]?.transcript || '';
     state.agentVoiceListening = false;
     state.agentInput = text;
+    state.voiceText = text ? `识别：${text}` : '没有识别到内容';
     state.tab = 'agent';
     render();
-    if (text && window.confirm(`发送给 Claude Code？\n\n${text}`)) sendAgentText(text);
+    document.querySelector('#agentInput')?.focus();
   };
   recognition.onerror = (event) => {
     state.agentVoiceListening = false;
@@ -770,49 +774,6 @@ function startAgentVoice() {
     render();
   };
   recognition.start();
-}
-
-function handleVoiceText(text) {
-  const action = matchVoiceAction(text);
-  if (action) {
-    state.voiceText = `识别：${text}。匹配到快捷动作「${action.label}」。`;
-    render();
-    if (window.confirm(`执行「${action.label}」？`)) runAction(action.id);
-    return;
-  }
-  state.commandMode = inferVoiceMode(text);
-  state.commandText = voiceToCommand(text);
-  state.voiceText = `识别：${text}。已填入命令框。`;
-  state.tab = 'command';
-  render();
-}
-
-function matchVoiceAction(text) {
-  const value = String(text || '').toLowerCase();
-  if (value.includes('锁') || value.includes('锁屏')) return state.actions.find((action) => action.id === 'lock-screen');
-  if (value.includes('下载')) return state.actions.find((action) => action.id === 'open-downloads');
-  if (value.includes('网络') || value.includes('ip')) return state.actions.find((action) => action.id === 'network-info');
-  if (value.includes('测试') || value.includes('在线')) return state.actions.find((action) => action.id === 'connection-test');
-  return null;
-}
-
-function inferVoiceMode(text) {
-  const value = String(text || '').toLowerCase();
-  if (value.includes('网关') || value.includes('本机') || value.includes('这台电脑')) return 'gateway';
-  if (value.includes('全部') || value.includes('所有') || value.includes('每台') || value.includes('三台')) return 'all';
-  return 'selected';
-}
-
-function voiceToCommand(text) {
-  let value = String(text || '').trim();
-  value = value.replace(/[，。；：！]/g, ' ');
-  value = value.replace(/^(帮我|请|麻烦)?(在)?(网关|本机|这台电脑|全部设备|所有设备|选中设备)?(上)?(执行|运行|输入|命令)\s*/i, '');
-  if (value.includes('主机名')) return 'hostname';
-  if (value.includes('当前用户')) return 'whoami';
-  if (value.includes('查看网关 CLI') || value.includes('查看网关 cli')) {
-    return 'codex --version; claude --version; opencode --version; gemini --version';
-  }
-  return value || 'hostname';
 }
 
 function targetText(mode) {
