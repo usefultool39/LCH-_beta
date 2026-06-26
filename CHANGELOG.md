@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Fix: `refreshManualPeers` no longer crashes when the manual peer list is
+  mutated concurrently (for example, `removeManualPeer` running while
+  `refreshManualPeers`'s HTTP probes are still in flight). The fix snapshots
+  the address array before the `await`, then skips indices that no longer have
+  a live record. Extracted into `src/shared/manual-peers.ts` so the logic
+  can be unit-tested without booting Electron; six new tests cover the
+  happy path, error classification, and the regression.
+- Docs: add `docs/已知限制.md` tracking known bugs, runtime quirks
+  (PowerShell `$_` truncation when invoking `lch run`, local-api.json port
+  fallback), and CLI distribution limitations of the desktop installer.
+- Docs: add `docs/跨网快速配置.md` as a 5-minute Tailscale + manual peer
+  checklist distilled from `外网访问推荐配置.md`.
+
 ## v0.16.0
 
 - Merge the D-drive Agent Gateway branch back into the main line so the phone UI includes the chat-style Claude Code / MiniMax-M3 control entry.
