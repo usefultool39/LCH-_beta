@@ -66,6 +66,7 @@ import { conversationMessageMetadata, conversationRecipientIds, conversationReco
 import { ControlReplayGuard } from '../shared/security';
 import { blockedDeviceFromTrust, isDeviceBlocked, isDeviceTrusted, trustedDeviceFromPeer } from '../shared/trust';
 import { migrateState, normalizeWebRtcConfig, type PersistedAppState } from '../shared/state-migration';
+import { applyManualPeerProbeResults } from '../shared/manual-peers';
 
 type RuntimePeer = PeerInfo;
 
@@ -2512,21 +2513,7 @@ async function connectManualPeer(address: string) {
 async function refreshManualPeers() {
   if (!state?.home || !state.manualPeerAddresses.length) return;
   const results = await Promise.allSettled(state.manualPeerAddresses.map((item) => probeManualPeer(item.address)));
-  results.forEach((result, index) => {
-    const record = state.manualPeerAddresses[index];
-    record.lastCheckedAt = Date.now();
-    if (result.status === 'fulfilled') {
-      record.status = 'online';
-      record.lastSeenAt = Date.now();
-      record.lastError = undefined;
-      record.peerId = result.value.packet.device.id;
-      record.peerName = result.value.packet.device.name;
-    } else {
-      const message = result.reason?.message || String(result.reason);
-      record.status = message.includes('家庭网络') ? 'home-mismatch' : message.includes('本机') ? 'self' : 'offline';
-      record.lastError = message;
-    }
-  });
+  applyManualPeerProbeResults(state.manualPeerAddresses, results);
   saveState();
   emitState();
 }
