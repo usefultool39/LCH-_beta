@@ -2512,8 +2512,9 @@ async function connectManualPeer(address: string) {
 
 async function refreshManualPeers() {
   if (!state?.home || !state.manualPeerAddresses.length) return;
-  const results = await Promise.allSettled(state.manualPeerAddresses.map((item) => probeManualPeer(item.address)));
-  applyManualPeerProbeResults(state.manualPeerAddresses, results);
+  const records = state.manualPeerAddresses.slice();
+  const results = await Promise.allSettled(records.map((item) => probeManualPeer(item.address)));
+  applyManualPeerProbeResults(records, results);
   saveState();
   emitState();
 }

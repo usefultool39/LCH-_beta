@@ -169,6 +169,15 @@ function normalizeRef(value) {
   return String(value || '').trim().toLowerCase();
 }
 
+function manualPeerAliases(device) {
+  const manualPeers = Array.isArray(device.manualPeers) ? device.manualPeers : [];
+  return manualPeers.flatMap((peer) => [
+    peer.address,
+    peer.host,
+    peer.label
+  ]).filter(Boolean);
+}
+
 function deviceAliasList(device) {
   return [
     device.id,
@@ -177,7 +186,8 @@ function deviceAliasList(device) {
     device.name,
     device.room,
     device.address,
-    `${device.address}:${device.controlPort}`
+    `${device.address}:${device.controlPort}`,
+    ...manualPeerAliases(device)
   ].filter(Boolean);
 }
 
@@ -200,25 +210,36 @@ function deviceSummary(device) {
 function matchDevice(device, ref) {
   const needle = normalizeRef(ref);
   if (!needle) return false;
-  if (normalizeRef(device.id) === needle) return true;
-  if (normalizeRef(device.id).startsWith(needle)) return true;
-  if (normalizeRef(device.alias) === needle) return true;
-  if (normalizeRef(device.displayName) === needle) return true;
-  if (normalizeRef(device.name) === needle) return true;
-  if (normalizeRef(device.address) === needle) return true;
-  if (normalizeRef(`${device.address}:${device.controlPort}`) === needle) return true;
-  return false;
+  return deviceAliasList(device).some((alias) => {
+    const normalized = normalizeRef(alias);
+    return normalized === needle || (alias === device.id && normalized.startsWith(needle));
+  });
+}
+
+function attachManualPeersToDevices(devices, manualPeers) {
+  const byId = new Map(devices.map((device) => [device.id, { ...device, manualPeers: [] }]));
+  for (const manualPeer of manualPeers || []) {
+    if (!manualPeer.peerId || !byId.has(manualPeer.peerId)) continue;
+    byId.get(manualPeer.peerId).manualPeers.push(manualPeer);
+  }
+  return [...byId.values()];
 }
 
 async function resolveDeviceRef(ref) {
   const devices = await request('GET', '/api/devices');
-  const matches = devices.filter((device) => matchDevice(device, ref));
+  const manualPeers = await request('GET', '/api/peers/manual').catch(() => []);
+  const enrichedDevices = attachManualPeersToDevices(devices, manualPeers);
+  const matches = enrichedDevices.filter((device) => matchDevice(device, ref));
   if (matches.length === 1) return matches[0];
   if (!matches.length) {
-    const known = devices.map((device) => `- ${device.name} (${device.address}, ${device.id.slice(0, 8)}, ${device.isOnline ? 'online' : 'offline'})`).join('\n');
+    const known = enrichedDevices.map((device) => {
+      const manual = manualPeerAliases(device).join(',');
+      const aliases = [device.address, manual].filter(Boolean).join(', ');
+      return `- ${device.name} (${aliases || device.address}, ${device.id.slice(0, 8)}, ${device.isOnline ? 'online' : 'offline'})`;
+    }).join('\n');
     throw new Error(`Device not found: ${ref}\nKnown devices:\n${known || '- none'}`);
   }
-  const detail = matches.map((device) => `- ${device.name} (${device.address}, ${device.id})`).join('\n');
+  const detail = matches.map((device) => `- ${device.name} (${deviceAliasList(device).join(', ')}, ${device.id})`).join('\n');
   throw new Error(`Device reference is ambiguous: ${ref}\n${detail}`);
 }
 
@@ -936,6 +957,8 @@ if (require.main === module) {
 }
 
 module.exports = {
+  attachManualPeersToDevices,
+  manualPeerAliases,
   matchDevice,
   normalizeRef,
   parseBoolean,

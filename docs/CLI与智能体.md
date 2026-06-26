@@ -15,14 +15,17 @@ lch devices --json
 - ID 前缀。
 - 设备名，例如 `L002`。
 - 别名，例如 `远端测试机`。
-- IP，例如 `192.168.2.94`。
-- IP:端口，例如 `192.168.2.94:46881`。
+- 局域网 IP，例如 `192.168.2.94`。
+- 局域网 IP:端口，例如 `192.168.2.94:46881`。
+- 手动 peer 的 Tailscale IP，例如 `100.120.218.47`。
+- 手动 peer 的 Tailscale Web 地址，例如 `100.120.218.47:46882`。
 
 ## 2. 执行命令
 
 ```bash
 lch run --device 远端测试机 "hostname" --timeout-ms 30000
 lch run --device 192.168.2.94 "whoami" --json
+lch run --device 100.120.218.47 "hostname" --timeout-ms 30000 --json
 lch run --all "hostname"
 ```
 
@@ -33,6 +36,16 @@ lch tasks
 lch tasks --json
 ```
 
+## 2.1 跨网手动 peer
+
+跨局域网时先把对方 Tailscale IP 加入手动 peer：
+
+```bash
+lch peer add 100.x.x.x
+lch peer list --json
+```
+
+`peer list` 里看到 `status=online` 后，可以直接用对方 Tailscale IP 作为 `--device` 参数。CLI 会把手动 peer 地址映射回对应设备 ID。
 ## 3. 截图观察
 
 ```bash

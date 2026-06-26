@@ -53,17 +53,15 @@ test('applyManualPeerProbeResults classifies rejected reasons into status states
 test('applyManualPeerProbeResults survives concurrent removal mid-refresh (regression)', () => {
   // Reproduces the original bug: removeManualPeer mutates the array while
   // refreshManualPeers' await is pending. Without snapshotting the array,
-  // results.forEach hits `undefined` and throws
-  //   `Cannot set properties of undefined (setting 'lastCheckedAt')`.
-  // The fix snapshots before await and skips indices that no longer have
-  // a live record; it does NOT try to re-align stale probe results, which
-  // would require a much heavier reconcile step. We just assert no throw
-  // and that the surviving record at index 0 still gets updated correctly.
+  // stale probe results can be written into the wrong surviving record.
+  // The refresh path snapshots before await, preserving probe/result
+  // alignment by object identity even if the live array is later spliced.
   const records = [
     { address: '100.64.1.2', status: 'unknown' },
     { address: '100.64.1.3', status: 'unknown' },
     { address: '100.64.1.4', status: 'unknown' }
   ];
+  const refreshSnapshot = records.slice();
   const results = [
     { status: 'fulfilled', value: { packet: { device: { id: 'A', name: 'A' } } } },
     { status: 'fulfilled', value: { packet: { device: { id: 'B', name: 'B' } } } },
@@ -72,10 +70,12 @@ test('applyManualPeerProbeResults survives concurrent removal mid-refresh (regre
   // Simulate concurrent removal of the middle entry before apply.
   records.splice(1, 1);
   assert.doesNotThrow(() => {
-    applyManualPeerProbeResults(records, results);
+    applyManualPeerProbeResults(refreshSnapshot, results);
   });
   assert.equal(records[0].status, 'online');
   assert.equal(records[0].peerId, 'A');
+  assert.equal(records[1].status, 'online');
+  assert.equal(records[1].peerId, 'C');
 });
 
 test('applyManualPeerProbeResults accepts non-Error rejected reasons', () => {
