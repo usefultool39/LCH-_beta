@@ -1609,6 +1609,7 @@ function SettingsView({
   onSetAutoTrust,
   onSetAutoLaunch,
   onSetAgentGateway,
+  onSetPreferLowLatencyRoutes,
   onSetWebRtcConfig,
   onConnectManualPeer,
   onRemoveManualPeer,
@@ -1622,6 +1623,7 @@ function SettingsView({
   onSetAutoTrust: (enabled: boolean) => void;
   onSetAutoLaunch: (enabled: boolean) => Promise<unknown> | void;
   onSetAgentGateway: (enabled: boolean) => void;
+  onSetPreferLowLatencyRoutes: (enabled: boolean) => Promise<unknown> | void;
   onSetWebRtcConfig: (config: WebRtcConfig) => Promise<unknown> | void;
   onConnectManualPeer: (address: string) => Promise<unknown> | void;
   onRemoveManualPeer: (address: string) => Promise<unknown> | void;
@@ -1993,11 +1995,29 @@ function SettingsView({
                     {state.agentGatewayEnabled ? '高级模式' : '已关闭'}
                   </span>
                 </div>
-                <p>开启后，手机可以把命令发送到网关本机或已信任设备；关闭后，手机快捷动作只作用于网关本机。</p>
+<p>开启后，手机可以把命令发送到网关本机或已信任设备；关闭后，手机快捷动作只作用于网关本机。</p>
                 <div className="rowActions">
                   <button className={state.agentGatewayEnabled ? 'secondary' : 'primary'} onClick={() => onSetAgentGateway(!state.agentGatewayEnabled)}>
                     {state.agentGatewayEnabled ? <ShieldOff size={16} /> : <ShieldCheck size={16} />}
                     {state.agentGatewayEnabled ? '关闭 Agent Gateway' : '开启 Agent Gateway'}
+                  </button>
+                </div>
+              </section>
+              <section className="advancedBox">
+                <div className="advancedBoxHeader">
+                  <div>
+                    <h3>按延迟自动选路（v0.19 实验）</h3>
+                    <p>开启后，控制消息会按延迟顺序尝试 Tailscale / LAN / 手动 peer 的所有路由，失败自动回退下一条。关闭时维持 v0.18 行为（直连第一地址）。</p>
+                  </div>
+                  <span className={`statusPill ${state.preferLowLatencyRoutes ? 'online' : 'offline'}`}>
+                    {state.preferLowLatencyRoutes ? '已开启' : '已关闭'}
+                  </span>
+                </div>
+                <p>如果发现某条路由不通，开启后通常能自动用其他路径继续。如果设备控制出现异常，关闭即可回到 v0.18 行为。</p>
+                <div className="rowActions">
+                  <button className={state.preferLowLatencyRoutes ? 'secondary' : 'primary'} onClick={() => onSetPreferLowLatencyRoutes(!state.preferLowLatencyRoutes)}>
+                    {state.preferLowLatencyRoutes ? <ShieldOff size={16} /> : <ShieldCheck size={16} />}
+                    {state.preferLowLatencyRoutes ? '关闭自动选路' : '开启自动选路'}
                   </button>
                 </div>
               </section>
@@ -2918,6 +2938,7 @@ useEffect(() => {
           onSetAutoTrust={(enabled) => run(() => api.setAutoTrust(enabled))}
           onSetAutoLaunch={(enabled) => run(() => api.setAutoLaunch(enabled))}
           onSetAgentGateway={(enabled) => run(() => api.setAgentGateway(enabled))}
+          onSetPreferLowLatencyRoutes={(enabled) => run(() => api.setPreferLowLatencyRoutes(enabled))}
           onSetWebRtcConfig={(config) => run(() => api.setWebRtcConfig(config))}
           onConnectManualPeer={(address) => run(() => api.connectManualPeer(address))}
           onRemoveManualPeer={(address) => run(() => api.removeManualPeer(address))}

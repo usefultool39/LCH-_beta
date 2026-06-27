@@ -25,6 +25,7 @@ declare global {
       getAutoLaunch: () => Promise<{ enabled: boolean; available: boolean; reason?: string }>;
       setAutoLaunch: (enabled: boolean) => Promise<{ enabled: boolean; available: boolean; reason?: string }>;
       setAgentGateway: (enabled: boolean) => Promise<AppStateView>;
+      setPreferLowLatencyRoutes: (enabled: boolean) => Promise<AppStateView>;
       setWebRtcConfig: (config: WebRtcConfig) => Promise<AppStateView>;
       connectManualPeer: (address: string) => Promise<AppStateView>;
       removeManualPeer: (address: string) => Promise<AppStateView>;

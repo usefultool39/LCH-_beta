@@ -2,7 +2,8 @@
 // Used both in the main process (when serializing peer state) and as a
 // reference for the renderer when picking which entry to display.
 
-import type { PeerNetworkRoute } from './protocol';
+import type { PeerInfo, PeerNetworkRoute } from './protocol';
+import { isTailnetAddress } from './tailnet-scan';
 
 const KIND_PRIORITY: Record<PeerNetworkRoute['kind'], number> = {
   // Among routes that are both online and at similar latency, prefer
@@ -12,6 +13,14 @@ const KIND_PRIORITY: Record<PeerNetworkRoute['kind'], number> = {
   lan: 1,
   manual: 2
 };
+
+export interface ControlRouteTarget {
+  host: string;
+  port: number;
+  kind: PeerNetworkRoute['kind'];
+  source: 'sorted-route' | 'peer-fallback';
+  latencyMs?: number;
+}
 
 /**
  * Stable sort that prefers online + low-latency routes, then tailnet over
@@ -44,4 +53,34 @@ export function sortRoutesByLatency<T extends Pick<PeerNetworkRoute, 'kind' | 'l
 export function pickPrimaryRoute<T extends PeerNetworkRoute>(routes: readonly T[]): T | null {
   if (!routes.length) return null;
   return sortRoutesByLatency(routes)[0];
+}
+
+/**
+ * Pick a host + port to actually open a connection on. Prefers the
+ * peer.networkRoutes list (sorted by liveness + latency + kind priority)
+ * and falls back to the legacy peer.address / peer.controlPort when the
+ * list is missing (legacy states or peers discovered before this field
+ * was populated).
+ *
+ * The result always has a usable host + port. Callers that want fail-over
+ * should use the full sorted list and try each entry in order.
+ */
+export function pickControlRoute(peer: Pick<PeerInfo, 'address' | 'controlPort' | 'networkRoutes'>): ControlRouteTarget {
+  const sorted = sortRoutesByLatency(peer.networkRoutes || []);
+  const top = sorted[0];
+  if (top && top.host && (top.controlPort || top.webPort)) {
+    return {
+      host: top.host,
+      port: top.controlPort || top.webPort || peer.controlPort,
+      kind: top.kind,
+      source: 'sorted-route',
+      latencyMs: top.latencyMs
+    };
+  }
+  return {
+    host: peer.address,
+    port: peer.controlPort,
+    kind: isTailnetAddress(peer.address) ? 'tailnet' : 'lan',
+    source: 'peer-fallback'
+  };
 }

@@ -44,6 +44,13 @@ export type PersistedAppState = {
   fullDiskAccessEnabled: boolean;
   autoTrustDevices: boolean;
   agentGatewayEnabled: boolean;
+  /**
+   * Phase D feature flag (v0.19.0). When true, sendControl will iterate
+   * over the peer's networkRoutes (sorted by latency) and try each one
+   * until one succeeds, instead of going straight to peer.address.
+   * Default false so v0.18.0 behaviour is preserved for existing users.
+   */
+  preferLowLatencyRoutes?: boolean;
   localApiToken: string;
   manualPeerAddresses: ManualPeerAddress[];
   transfers: TransferRecord[];
@@ -342,6 +349,7 @@ export function migrateState(raw: unknown, defaults: PersistedAppState, options:
     fullDiskAccessEnabled: Boolean(parsed.fullDiskAccessEnabled),
     autoTrustDevices: Boolean(parsed.autoTrustDevices),
     agentGatewayEnabled: Boolean(parsed.agentGatewayEnabled),
+    preferLowLatencyRoutes: Boolean(parsed.preferLowLatencyRoutes),
     localApiToken: parsed.localApiToken ? String(parsed.localApiToken) : defaults.localApiToken,
     manualPeerAddresses: manualPeerNormalizer(Array.isArray(parsed.manualPeerAddresses) ? parsed.manualPeerAddresses : []),
     transfers: normalizeTransferRecords(Array.isArray(parsed.transfers) ? parsed.transfers : []),

@@ -414,8 +414,9 @@ export interface AppStateView {
   sharedFolder: string;
   fileShareEnabled: boolean;
   fullDiskAccessEnabled: boolean;
-  autoTrustDevices: boolean;
+autoTrustDevices: boolean;
   agentGatewayEnabled: boolean;
+  preferLowLatencyRoutes: boolean;
   manualPeerAddresses: ManualPeerAddress[];
   nearbyRooms: LanRoomInfo[];
 transfers: TransferRecord[];

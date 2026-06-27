@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { sortRoutesByLatency, pickPrimaryRoute } = require('../dist/shared/route-priority');
+const { pickControlRoute, pickPrimaryRoute, sortRoutesByLatency } = require('../dist/shared/route-priority');
 
 test('sortRoutesByLatency prefers online routes over offline ones', () => {
   const input = [
@@ -65,4 +65,76 @@ test('pickPrimaryRoute returns the best route after sorting', () => {
 
 test('pickPrimaryRoute returns null on empty input', () => {
   assert.equal(pickPrimaryRoute([]), null);
+});
+
+test('pickControlRoute prefers the best sorted route over peer.address', () => {
+  const peer = {
+    address: '192.168.1.5',
+    controlPort: 46881,
+    networkRoutes: [
+      { kind: 'lan', host: '192.168.1.5', controlPort: 46881, webPort: 46882, status: 'online', latencyMs: 80, source: 'discovery' },
+      { kind: 'tailnet', host: '100.64.1.5', controlPort: 46881, webPort: 46882, status: 'online', latencyMs: 12, source: 'discovery' }
+    ]
+  };
+  const target = pickControlRoute(peer);
+  assert.equal(target.host, '100.64.1.5');
+  assert.equal(target.port, 46881);
+  assert.equal(target.kind, 'tailnet');
+  assert.equal(target.source, 'sorted-route');
+  assert.equal(target.latencyMs, 12);
+});
+
+test('pickControlRoute falls back to peer.address when networkRoutes is empty', () => {
+  const peer = { address: '100.64.1.5', controlPort: 46881, networkRoutes: [] };
+  const target = pickControlRoute(peer);
+  assert.equal(target.host, '100.64.1.5');
+  assert.equal(target.port, 46881);
+  assert.equal(target.kind, 'tailnet');
+  assert.equal(target.source, 'peer-fallback');
+});
+
+test('pickControlRoute falls back when networkRoutes is missing', () => {
+  const peer = { address: '192.168.1.5', controlPort: 46881 };
+  const target = pickControlRoute(peer);
+  assert.equal(target.host, '192.168.1.5');
+  assert.equal(target.kind, 'lan');
+  assert.equal(target.source, 'peer-fallback');
+});
+
+test('pickControlRoute uses webPort when controlPort missing on a route', () => {
+  const peer = {
+    address: '192.168.1.5',
+    controlPort: 46881,
+    networkRoutes: [
+      { kind: 'manual', host: '100.64.9.9', webPort: 46882, status: 'online', latencyMs: 5, source: 'manual' }
+    ]
+  };
+  const target = pickControlRoute(peer);
+  assert.equal(target.host, '100.64.9.9');
+  assert.equal(target.port, 46882);
+  assert.equal(target.kind, 'manual');
+});
+
+test('pickControlRoute skips routes with neither port set', () => {
+  const peer = {
+    address: '192.168.1.5',
+    controlPort: 46881,
+    networkRoutes: [
+      { kind: 'lan', host: '0.0.0.0', status: 'offline' },
+      { kind: 'lan', host: '192.168.1.5', controlPort: 46881, status: 'online', latencyMs: 5 }
+    ]
+  };
+  const target = pickControlRoute(peer);
+  assert.equal(target.host, '192.168.1.5');
+  assert.equal(target.source, 'sorted-route');
+});
+
+test('pickControlRoute infers tailnet kind from 100.x addresses', () => {
+  const peer = {
+    address: '100.64.7.7',
+    controlPort: 46881,
+    networkRoutes: []
+  };
+  const target = pickControlRoute(peer);
+  assert.equal(target.kind, 'tailnet');
 });

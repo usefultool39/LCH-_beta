@@ -69,7 +69,7 @@ import { blockedDeviceFromTrust, isDeviceBlocked, isDeviceTrusted, trustedDevice
 import { migrateState, normalizeWebRtcConfig, type PersistedAppState } from '../shared/state-migration';
 import { applyManualPeerProbeResults } from '../shared/manual-peers';
 import { isStealthHome, isTailnetAddress, tailnetHostsFromLocalAddresses as computeTailnetHosts } from '../shared/tailnet-scan';
-import { pickPrimaryRoute, sortRoutesByLatency } from '../shared/route-priority';
+import { pickControlRoute, pickPrimaryRoute, sortRoutesByLatency } from '../shared/route-priority';
 
 type RuntimePeer = PeerInfo;
 
@@ -482,10 +482,11 @@ function createDefaultState(): AppState {
     tasks: [],
     auditLog: [],
     sharedFolder: '',
-    fileShareEnabled: true,
+fileShareEnabled: true,
     fullDiskAccessEnabled: false,
     autoTrustDevices: false,
     agentGatewayEnabled: false,
+    preferLowLatencyRoutes: false,
     localApiToken: base64url(crypto.randomBytes(32)),
     manualPeerAddresses: [],
     transfers: [],
@@ -1109,8 +1110,9 @@ function appStateView() {
     sharedFolder: state.sharedFolder,
     fileShareEnabled: state.fileShareEnabled,
     fullDiskAccessEnabled: state.fullDiskAccessEnabled,
-    autoTrustDevices: state.autoTrustDevices,
+autoTrustDevices: state.autoTrustDevices,
     agentGatewayEnabled: state.agentGatewayEnabled,
+    preferLowLatencyRoutes: Boolean(state.preferLowLatencyRoutes),
     manualPeerAddresses: state.manualPeerAddresses,
     nearbyRooms: serializeNearbyRooms(),
     transfers: state.transfers.slice(0, MAX_TRANSFER_RECORDS),
@@ -1887,6 +1889,17 @@ function setFullDiskAccess(enabled: boolean) {
 function setAutoTrustDevices(enabled: boolean) {
   state.autoTrustDevices = Boolean(enabled);
   addAudit('device.autoTrust', state.autoTrustDevices ? '开启自动信任新设备' : '关闭自动信任新设备');
+  saveState();
+  emitState();
+  return appStateView();
+}
+
+function setPreferLowLatencyRoutes(enabled: boolean) {
+  state.preferLowLatencyRoutes = Boolean(enabled);
+  addAudit(
+    'network.preferLowLatency',
+    state.preferLowLatencyRoutes ? '开启：控制消息将按延迟顺序尝试多条路由' : '关闭：使用单地址（v0.18 行为）'
+  );
   saveState();
   emitState();
   return appStateView();
@@ -2801,22 +2814,26 @@ function getTrustedPeer(peerId: string) {
   return peer;
 }
 
-function sendControl<T = unknown>(peerId: string, type: string, data: unknown, timeoutMs = 15000): Promise<T> {
-  const peer = getTrustedPeer(peerId);
-  const envelope = createEnvelope(type, data);
+function sendControlOnRoute<T = unknown>(peer: RuntimePeer, envelope: ReturnType<typeof createEnvelope>, timeoutMs: number): Promise<T> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://${peer.address}:${peer.controlPort}`, { maxPayload: MAX_CONTROL_MESSAGE_BYTES });
+    const target = pickControlRoute(peer);
+    const ws = new WebSocket(`ws://${target.host}:${target.port}`, { maxPayload: MAX_CONTROL_MESSAGE_BYTES });
+    let settled = false;
     const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
       ws.terminate();
-      reject(new Error('远程设备响应超时：如果设备显示在线但无法控制，通常是目标电脑的 Windows 防火墙阻止了入站控制。请在目标电脑打开 Lan Control Hub 设置里的“修复防火墙”，或运行 lch firewall repair。'));
+      reject(new Error('route-timeout'));
     }, timeoutMs);
     ws.on('open', () => ws.send(JSON.stringify(envelope)));
     ws.on('message', (raw) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       try {
-        clearTimeout(timer);
         const payload = decryptEnvelope(JSON.parse(raw.toString()) as EncryptedEnvelope);
-        if (payload.fromId !== peer.id) throw new Error('响应设备身份不一致');
-        if (payload.type !== 'response') throw new Error('响应类型无效');
+        if (payload.fromId !== peer.id) { reject(new Error('响应设备身份不一致')); return; }
+        if (payload.type !== 'response') { reject(new Error('响应类型无效')); return; }
         const body = payload.data as { ok: boolean; data?: T; error?: string };
         ws.close();
         if (!body.ok) reject(new Error(body.error || '远程请求失败'));
@@ -2826,10 +2843,49 @@ function sendControl<T = unknown>(peerId: string, type: string, data: unknown, t
       }
     });
     ws.on('error', (err) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
-      reject(err);
+      reject(err instanceof Error ? err : new Error(String(err)));
     });
   });
+}
+
+function sendControl<T = unknown>(peerId: string, type: string, data: unknown, timeoutMs = 15000): Promise<T> {
+  const peer = getTrustedPeer(peerId);
+  const envelope = createEnvelope(type, data);
+  // Legacy / default behaviour: connect straight to peer.address + peer.controlPort.
+  if (!state.preferLowLatencyRoutes) {
+    return sendControlOnRoute<T>(peer, envelope, timeoutMs);
+  }
+  // Phase D behaviour: try the sorted route list in order, fall back to the
+  // peer.address entry as the last resort. Stop on the first success.
+  const candidates: Array<{ host: string; port: number }> = [];
+  const seen = new Set<string>();
+  for (const route of sortRoutesByLatency(peer.networkRoutes || [])) {
+    if (!route.host || (!route.controlPort && !route.webPort)) continue;
+    const port = route.controlPort || route.webPort;
+    const key = `${route.host}:${port}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    candidates.push({ host: route.host, port: port as number });
+  }
+  const fallbackKey = `${peer.address}:${peer.controlPort}`;
+  if (!seen.has(fallbackKey)) candidates.push({ host: peer.address, port: peer.controlPort });
+
+  return (async () => {
+    let lastError: unknown = null;
+    for (const candidate of candidates) {
+      try {
+        return await sendControlOnRoute<T>({ ...peer, address: candidate.host, controlPort: candidate.port }, envelope, timeoutMs);
+      } catch (err) {
+        lastError = err;
+        // try next route
+      }
+    }
+    const reason = lastError instanceof Error ? lastError.message : String(lastError);
+    throw new Error(`远程设备响应超时：已尝试 ${candidates.length} 条路由均失败（最后错误：${reason}）。请在目标电脑打开设置里的“修复防火墙”，或运行 lch firewall repair。`);
+  })();
 }
 
 async function handleControlMessage(payload: { fromId: string; fromName: string; type: string; data: any }) {
@@ -4581,6 +4637,7 @@ async function handleLocalApi(pathname: string, method: string, body: any) {
   if (method === 'GET' && pathname === '/api/settings/auto-launch') return getAutoLaunch();
   if (method === 'POST' && pathname === '/api/settings/auto-launch') return setAutoLaunch(body.enabled === true);
   if (method === 'POST' && pathname === '/api/settings/agent-gateway') return setAgentGatewayEnabled(body.enabled === true);
+  if (method === 'POST' && pathname === '/api/settings/prefer-low-latency') return setPreferLowLatencyRoutes(body.enabled === true);
   if (method === 'POST' && pathname === '/api/settings/webrtc') return setWebRtcConfig(body.webrtc || body.config || body);
   if (method === 'GET' && pathname === '/api/tasks') return state.tasks.slice(0, 200);
   if (method === 'GET' && pathname === '/api/transfers') return state.transfers.slice(0, MAX_TRANSFER_RECORDS);
@@ -4923,6 +4980,7 @@ ipcMain.handle('lch:create-home', (_event, name, stealth) => createHome(name, Bo
   ipcMain.handle('lch:get-auto-launch', () => getAutoLaunch());
   ipcMain.handle('lch:set-auto-launch', (_event, enabled) => setAutoLaunch(Boolean(enabled)));
   ipcMain.handle('lch:set-agent-gateway', (_event, enabled) => setAgentGatewayEnabled(Boolean(enabled)));
+  ipcMain.handle('lch:set-prefer-low-latency', (_event, enabled) => setPreferLowLatencyRoutes(Boolean(enabled)));
   ipcMain.handle('lch:set-webrtc-config', (_event, config) => setWebRtcConfig(config || {}));
   ipcMain.handle('lch:connect-manual-peer', (_event, address) => connectManualPeer(address));
   ipcMain.handle('lch:remove-manual-peer', (_event, address) => removeManualPeer(address));

@@ -23,6 +23,7 @@ const api = {
   getAutoLaunch: () => ipcRenderer.invoke('lch:get-auto-launch'),
   setAutoLaunch: (enabled: boolean) => ipcRenderer.invoke('lch:set-auto-launch', enabled),
   setAgentGateway: (enabled: boolean) => ipcRenderer.invoke('lch:set-agent-gateway', enabled),
+  setPreferLowLatencyRoutes: (enabled: boolean) => ipcRenderer.invoke('lch:set-prefer-low-latency', enabled),
   setWebRtcConfig: (config: unknown) => ipcRenderer.invoke('lch:set-webrtc-config', config),
   connectManualPeer: (address: string) => ipcRenderer.invoke('lch:connect-manual-peer', address),
   removeManualPeer: (address: string) => ipcRenderer.invoke('lch:remove-manual-peer', address),
