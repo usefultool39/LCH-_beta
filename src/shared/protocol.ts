@@ -143,8 +143,15 @@ export interface LanRoomInfo {
   deviceCount: number;
   devices: LanRoomDevice[];
   lastSeenAt: number;
-  source: 'broadcast' | 'scan' | 'manual';
+  source: 'broadcast' | 'scan' | 'manual' | 'tailnet-scan';
   isCurrent?: boolean;
+  /**
+   * The remote room is running in stealth mode. Stealth rooms do not
+   * broadcast UDP presence; we only learn about them via point-to-point
+   * scans or by manually pasting the room secret. The badge in the UI
+   * should hint that joining requires entering the secret by hand.
+   */
+  stealth?: boolean;
 }
 
 export interface DeviceIdentity {
@@ -161,6 +168,13 @@ export interface HomeInfo {
   secret: string;
   createdAt: number;
   createdByDeviceId?: string;
+  /**
+   * Stealth rooms do NOT broadcast UDP presence. Point-to-point probes
+   * (manual add, LAN / tailnet HTTP scans) still get a reply, but the
+   * room will never appear in passive discovery. Anyone who wants to
+   * join must paste the room secret manually.
+   */
+  stealth?: boolean;
 }
 
 export interface DiscoveryPacket {
@@ -178,6 +192,13 @@ export interface DiscoveryPacket {
   capabilities: Capability[];
   capabilityVersions?: Partial<Record<Capability, number>>;
   timestamp: number;
+  /**
+   * When true, the originating room is in stealth mode. Stealth rooms
+   * do not broadcast UDP presence; only point-to-point probes get a
+   * reply. The UI uses this flag to remind the user that joining
+   * requires the room secret.
+   */
+  homeStealth?: boolean;
 }
 
 export interface PeerInfo extends DeviceIdentity {

@@ -313,7 +313,14 @@ export function migrateState(raw: unknown, defaults: PersistedAppState, options:
 
   return {
     ...defaults,
-    home: isRecord(parsed.home) ? parsed.home as HomeInfo : null,
+    home: isRecord(parsed.home)
+      ? {
+          ...(parsed.home as HomeInfo),
+          // Older persisted states were created before stealth support;
+          // default to false so legacy homes keep broadcasting.
+          stealth: Boolean((parsed.home as HomeInfo).stealth)
+        }
+      : null,
     stateVersion: STATE_SCHEMA_VERSION,
     device: {
       id: deviceId,

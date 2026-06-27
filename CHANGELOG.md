@@ -29,8 +29,25 @@
   co-existence story, and the GPO / `Run` registry edge cases.
 - Docs: add `docs/room-discovery-redesign.md` capturing the design
   conversation about Tailscale-only / LAN-only scanning, stealth rooms, and
-  the post-join trust flow. P0 items (Tailscale subnet scan, stealth mode)
-  are queued for v0.17.0.
+  the post-join trust flow.
+- Feat: Tailscale subnet scan (v0.17.0). When the active network is
+  Tailscale (or both), `scanRooms` also probes the 100.x CGNAT range.
+  The peer list comes from `tailscale status --json` when the CLI is on
+  PATH; otherwise we fall back to sweeping the /24 around every 100.x
+  address we own (typical for small tailnets). Concurrent probe limit
+  is 32 with 1s per-host timeout. The new `src/shared/tailnet-scan.ts`
+  keeps the helper pure and unit-tested (5 new tests).
+- Feat: smart scan entry. `scanRooms` now picks LAN / tailnet / both
+  based on `NetworkInfo.activeNetwork`; the SetupScreen shows the scan
+  kind badge on each discovered room card.
+- Feat: stealth rooms (v0.17.0). When creating a home, the user can
+  tick "隐身房间" to skip UDP presence broadcasting. Stealth rooms
+  still respond to point-to-point probes (manual add / LAN + tailnet
+  HTTP scans) and to direct HTTP `/api/presence` requests, so existing
+  members and people with the secret can still reach them. The new
+  `HomeInfo.stealth` flag is persisted via `state-migration`; the
+  SetupScreen shows a "隐身" badge on stealth rooms and reminds users
+  that joining requires the secret by hand.
 
 ## v0.16.0
 

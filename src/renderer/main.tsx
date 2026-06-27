@@ -401,7 +401,7 @@ function SetupScreen({
 }: {
   rooms: LanRoomInfo[];
   networkInfo: NetworkInfo;
-  onCreate: (name: string) => void;
+  onCreate: (name: string, stealth?: boolean) => void;
   onJoin: (secret: string, name: string, expectedHomeId?: string) => void;
   onScanRooms: () => Promise<unknown> | void;
 }) {
@@ -412,7 +412,8 @@ function SetupScreen({
     if (kind === 'both') return { label: '当前网络：Tailscale + 局域网', cls: 'net both', hint: '可扫描 Tailscale 和局域网上的房间' };
     return { label: '当前网络：未连接', cls: 'net none', hint: '请连接 Wi-Fi 或启用 Tailscale' };
   })();
-  const [name, setName] = useState('我的 LCH 房间');
+const [name, setName] = useState('我的 LCH 房间');
+  const [stealth, setStealth] = useState(false);
   const [secret, setSecret] = useState('');
   const [selectedRoomId, setSelectedRoomId] = useState('');
   const [scanning, setScanning] = useState(false);
@@ -460,19 +461,26 @@ return (
           </div>
           <button className="secondary" disabled={scanning} onClick={scanRooms}><RefreshCw size={16} /> {scanning ? '扫描中' : '扫描'}</button>
         </div>
-        <div className="roomScanList">
-          {rooms.length ? rooms.map((room) => (
-            <button
-              className={`roomScanRow ${selectedRoomId === room.homeId ? 'active' : ''}`}
-              key={room.homeId}
-              type="button"
-              onClick={() => setSelectedRoomId(room.homeId)}
-            >
-              <span className="roomScanTitle">{room.displayName}</span>
-              <span>{roomCode(room.homeId)} · {room.deviceCount} 台设备 · 局域网入口 {room.hostAddress}:{room.webPort}</span>
-            </button>
-          )) : (
-            <div className="empty small">还没有扫到附近局域网入口。确认已有电脑打开了 Lan Control Hub，或直接创建新房间。</div>
+<div className="roomScanList">
+          {rooms.length ? rooms.map((room) => {
+            const entryKind = /^100\.|^fd7a:115c:a1e0:/i.test(room.hostAddress) ? 'Tailscale 入口' : '局域网入口';
+            const scanKindLabel = room.source === 'tailnet-scan' ? 'Tailscale 扫描' : (room.source === 'scan' ? '主动扫描' : (room.source === 'manual' ? '手动添加' : '局域网广播'));
+            return (
+              <button
+                className={`roomScanRow ${selectedRoomId === room.homeId ? 'active' : ''}`}
+                key={room.homeId}
+                type="button"
+                onClick={() => setSelectedRoomId(room.homeId)}
+              >
+                <span className="roomScanTitle">
+                  {room.displayName}
+                  {room.stealth ? <span className="roomBadge stealth" title="隐身房间：不广播 UDP，需要手动输入密钥">隐身</span> : null}
+                </span>
+                <span>{roomCode(room.homeId)} · {room.deviceCount} 台设备 · {entryKind} {room.hostAddress}:{room.webPort} · {scanKindLabel}</span>
+              </button>
+            );
+          }) : (
+            <div className="empty small">还没有扫到附近入口。确认已有电脑打开了 Lan Control Hub，或直接创建新房间。</div>
           )}
         </div>
         <div className="field">
@@ -487,9 +495,16 @@ return (
           <label>创建一个新房间</label>
           <input value={name} onChange={(event) => setName(event.target.value)} />
         </div>
-        <button className="primary wide" onClick={() => onCreate(name)}>
+<button className="primary wide" onClick={() => onCreate(name, stealth)}>
           <Home size={16} /> 创建新房间
         </button>
+        <label className="stealthToggle">
+          <input type="checkbox" checked={stealth} onChange={(event) => setStealth(event.target.checked)} />
+          <span>
+            <strong>隐身房间</strong>
+            <small>不广播 UDP presence；其他设备必须手动输入房间密钥才能加入。已加入的设备仍可正常通信。</small>
+          </span>
+        </label>
       </section>
     </main>
   );

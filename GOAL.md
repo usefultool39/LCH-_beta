@@ -15,7 +15,7 @@
 | Phase | 内容 | 状态 | HEAD |
 |---|---|---|---|
 | A | 网络感知 + 开机自动启动 | ✅ 已落地 | `3b298b5` |
-| B | Tailscale 子网扫描 + 房主隐身 + 智能扫描入口 | 🟡 进行中 | — |
+| B | Tailscale 子网扫描 + 房主隐身 + 智能扫描入口 | ✅ 已落地 | `<phase-b HEAD>` |
 | C | 加入后信任向导 + 跨网路由优先 | ⏳ 路线图 | — |
 
 每次完成一块，**就地更新这张表**，并 commit 进 git。
@@ -42,54 +42,58 @@
 
 ---
 
-## Phase B：v0.17.0（路线图 — 进行中）
+## Phase B：v0.17.0（已落地 — HEAD 待提交后填入）
 
-### B.1 Tailscale 子网扫描 [P0]
+### B.1 Tailscale 子网扫描 [P0] ✅
 
 **目标**：当 `activeNetwork === 'tailnet'` 或 `'both'` 时，扫描 Tailscale 子网（100.x）上其他 LCH 房间。
 
-**实现路径**：
+**实际实现**：
 1. 拿 tailnet 节点列表：
-   - 优先：`tailscale status --json`（要求 tailscale CLI 在 PATH）
-   - 退化：解析本机 Tailscale 接口上的 100.x 邻居（依赖 OS-specific）
-   - 兜底：提示用户手动输入 100.x 子网范围（如 `100.64.0.0/10`）
-2. 并发探测每个 100.x 的 `:46882`，发 discovery probe
-3. 响应方回 `DiscoveryPacket`（含 `homeId` + 设备摘要）
-4. 收敛到 `nearbyRooms`，UI 显示「Tailscale 入口」标签
-5. 加入探测的并发数（建议 50）和超时（建议 1s）
+   - 优先：`tailscale status --json`（`spawn('tailscale', ['status', '--json'])`，3s 超时）— 解析 `Peer.*.TailscaleIPs` + 去掉 self
+   - 退化：`tailnetHostsFromLocalAddresses(ownAddresses)` — 扫本机每个 100.x 的 /24
+2. 并发探测每个 100.x 的 `:46882`，HTTP GET `/api/presence`，1s 超时
+3. 响应方回 `DiscoveryPacket`（含 `homeId` + `homeStealth` 字段）
+4. 收敛到 `nearbyRooms`（`source: 'tailnet-scan'`）
+5. 并发数 32（vs LAN 扫描的 64）
 
-**测试要求**：
-- 单元测试：mock Tailscale 节点列表，验证探测逻辑
-- 集成测试：两台 LCH 在 tailnet 上的双向发现
+**新文件**：`src/shared/tailnet-scan.ts`（pure helper，易测）
 
-**预计工作量**：2-3 天
+**测试**：`tests/tailnet-scan.test.js` — 5 个测试覆盖：
+- `isTailnetAddress` 匹配 100.x / fd7a:115c:a1e0::
+- `tailnetHostsFromLocalAddresses` /24 sweep 计算（含 self 排除、network/broadcast 排除）
+- `isStealthHome` 语义
 
-### B.2 房主隐身模式 [P0]
+### B.2 房主隐身模式 [P0] ✅
 
 **目标**：创房间时勾选「隐身」，房间不主动广播 discovery packet，但已加入设备仍可通信。
 
-**实现路径**：
-1. `HomeInfo` 加 `stealth: boolean`，state migration 兼容
-2. `broadcastPresence()` 在 `stealth === true` 时不发包（仍响应点对点探测）
-3. 创建房间表单加 checkbox
-4. 房间卡片显示「隐身」徽章
-5. stealth 房间**必须**手动输入密钥加入（不能通过扫描列表点选）
+**实际实现**：
+1. `HomeInfo.stealth: boolean` 已加，state migration 老 state 默认为 `false`
+2. `broadcastPresence()` 在 `state.home.stealth` 为真时直接 return（不发 UDP 包）
+3. `/api/presence` HTTP 探测响应**仍回包**（带 `homeStealth: true`），让 stealth 房间可被点对点发现
+4. `DiscoveryPacket.homeStealth?: boolean` 字段
+5. `LanRoomInfo.stealth?: boolean` 字段（记忆 stealth 标识）
+6. SetupScreen 创建房间表单加 checkbox；房间卡片显示「隐身」徽章
+7. SetupScreen scan 列表展示「局域网广播 / 主动扫描 / Tailscale 扫描 / 手动添加」标签
+8. SetupScreen 提示：stealth 房间不广播，要加入需手输密钥
 
-**测试要求**：
-- 单元测试：`broadcastPresence` 在 stealth 时不发包
-- 手动测试：两台设备，一台 stealth，验证另一台扫不到但手输密钥能加入
-
-**预计工作量**：1 天
-
-### B.3 智能扫描入口 [P1]
+### B.3 智能扫描入口 [P1] ✅
 
 **目标**：登录界面扫描按钮按 `activeNetwork` 智能选范围，避免用户混淆。
 
-**实现路径**：
-- `scanRooms()` 内部根据 `networkInfo.activeNetwork` 选 LAN / Tailnet / 双扫
-- UI 单一按钮，hover 显示具体范围
+**实际实现**：
+- `scanRooms()` 是新入口（替换原 `scanLanRooms()`），按 `activeNetwork` 自动选 LAN / Tailnet / 双扫
+- 返回 `{ rooms, scanned: { lan?, tailnet?, tailnetSource? } }` — 包含扫描元信息（方便调试 / UI 显示）
+- IPC: `lch:scan-rooms` 改用新 `scanRooms()`
+- REST: `POST /api/setup/create` 接受 `body.stealth` 字段
+- IPC: `lch:create-home` 接受 `stealth` 参数
 
-**预计工作量**：半天（依赖 B.1 落地）
+**兼容性**：
+- `scanLanRooms()` 函数保留（内部 helper）
+- 老代码（如果有）仍可调用 `scanLanRooms()`
+
+**Phase B 工作量**：~3 天（合并 B.1 + B.2 + B.3）
 
 ---
 

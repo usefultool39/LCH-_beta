@@ -68,6 +68,7 @@ import { ControlReplayGuard } from '../shared/security';
 import { blockedDeviceFromTrust, isDeviceBlocked, isDeviceTrusted, trustedDeviceFromPeer } from '../shared/trust';
 import { migrateState, normalizeWebRtcConfig, type PersistedAppState } from '../shared/state-migration';
 import { applyManualPeerProbeResults } from '../shared/manual-peers';
+import { isStealthHome, isTailnetAddress, tailnetHostsFromLocalAddresses as computeTailnetHosts } from '../shared/tailnet-scan';
 
 type RuntimePeer = PeerInfo;
 
@@ -735,7 +736,8 @@ function rememberLanRoom(packet: DiscoveryPacket, address: string, source: LanRo
     devices,
     lastSeenAt: now,
     source,
-    isCurrent: Boolean(state.home && state.home.id === packet.homeId)
+    isCurrent: Boolean(state.home && state.home.id === packet.homeId),
+    stealth: Boolean(packet.homeStealth)
   });
   return true;
 }
@@ -815,6 +817,109 @@ async function scanLanRooms() {
   return serializeNearbyRooms();
 }
 
+async function probeTailnetHost(host: string) {
+  try {
+    const packet = await getHttpJson<DiscoveryPacket>(
+      `http://${host}:${DEFAULT_WEB_PORT}/api/presence`,
+      1000
+    );
+    if (isDiscoveryPacket(packet)) {
+      rememberLanRoom(packet, host, 'tailnet-scan');
+    }
+  } catch {
+    // Tailnet probing is best-effort; offline / firewalled hosts are expected.
+  }
+}
+
+function tailnetHostsFromLocalAddresses(): string[] {
+  return computeTailnetHosts(localAddresses());
+}
+
+async function getTailnetHostsFromCli(): Promise<string[] | null> {
+  // Try `tailscale status --json` for an authoritative peer list.
+  // Returns null on any failure so the caller can fall back.
+  return new Promise((resolve) => {
+    let resolved = false;
+    let stdout = '';
+    let stderr = '';
+    const finish = (value: string[] | null) => {
+      if (resolved) return;
+      resolved = true;
+      resolve(value);
+    };
+    let proc: ReturnType<typeof spawn>;
+    try {
+      proc = spawn('tailscale', ['status', '--json'], { timeout: 3000 });
+    } catch {
+      finish(null);
+      return;
+    }
+    proc.stdout?.on('data', (chunk) => { stdout += chunk.toString('utf8'); });
+    proc.stderr?.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
+    proc.on('error', () => finish(null));
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        logRuntimeError('tailscale-cli', new Error(`tailscale exited ${code}: ${stderr.slice(0, 200)}`));
+        finish(null);
+        return;
+      }
+      try {
+        const data = JSON.parse(stdout);
+        const ips = new Set<string>();
+        const peers = (data && typeof data === 'object' && data.Peer) || {};
+        if (data && typeof data === 'object' && data.Self && Array.isArray(data.Self.TailscaleIPs)) {
+          for (const ip of data.Self.TailscaleIPs) {
+            if (typeof ip === 'string') ips.add(ip);
+          }
+        }
+        for (const id of Object.keys(peers)) {
+          const peer = peers[id];
+          if (peer && Array.isArray(peer.TailscaleIPs)) {
+            for (const ip of peer.TailscaleIPs) {
+              if (typeof ip === 'string' && isTailnetAddress(ip)) ips.add(ip);
+            }
+          }
+        }
+        // Strip our own addresses from the candidate set.
+        for (const self of localAddresses()) ips.delete(self);
+        finish([...ips]);
+      } catch (error) {
+        logRuntimeError('tailscale-cli-parse', error);
+        finish(null);
+      }
+    });
+  });
+}
+
+async function scanTailnetRooms(): Promise<{ scanned: number; source: 'cli' | 'fallback' }> {
+  let hosts: string[] | null = await getTailnetHostsFromCli();
+  let source: 'cli' | 'fallback' = 'cli';
+  if (!hosts || !hosts.length) {
+    hosts = tailnetHostsFromLocalAddresses();
+    source = 'fallback';
+  }
+  if (!hosts.length) return { scanned: 0, source };
+  await runLimited(hosts, 32, probeTailnetHost);
+  return { scanned: hosts.length, source };
+}
+
+async function scanRooms(): Promise<{ rooms: ReturnType<typeof serializeNearbyRooms>; scanned: { lan?: number; tailnet?: number; tailnetSource?: 'cli' | 'fallback' } }> {
+  const kind = networkInfo().activeNetwork;
+  const scanned: { lan?: number; tailnet?: number; tailnetSource?: 'cli' | 'fallback' } = {};
+  if (kind === 'tailnet' || kind === 'both') {
+    const result = await scanTailnetRooms();
+    scanned.tailnet = result.scanned;
+    scanned.tailnetSource = result.source;
+  }
+  if (kind === 'lan' || kind === 'both') {
+    const lanHosts = localScanHosts();
+    await runLimited(lanHosts, 64, probeLanRoom);
+    scanned.lan = lanHosts.length;
+  }
+  emitState();
+  return { rooms: serializeNearbyRooms(), scanned };
+}
+
 function isBlockedDevice(deviceId: string, publicKeyHashValue?: string) {
   return isDeviceBlocked(state.blockedDevices, deviceId, publicKeyHashValue);
 }
@@ -823,9 +928,7 @@ function isPeerTrusted(peer: Pick<PeerInfo, 'id' | 'publicKey' | 'publicKeyHash'
   return isDeviceTrusted(state.trustedDevices, state.blockedDevices, peer);
 }
 
-function isTailnetAddress(host = '') {
-  return /^100\./.test(host) || /^fd7a:115c:a1e0:/i.test(host);
-}
+
 
 function routeKindLabel(kind: 'lan' | 'tailnet' | 'manual') {
   if (kind === 'lan') return '局域网入口';
@@ -2300,7 +2403,7 @@ function ensureHome() {
   return state.home;
 }
 
-function createHome(name = DEFAULT_HOME_NAME) {
+function createHome(name = DEFAULT_HOME_NAME, stealth = false) {
   const secret = base64url(crypto.randomBytes(32));
   resetNetworkTrust();
   state.home = {
@@ -2308,7 +2411,8 @@ function createHome(name = DEFAULT_HOME_NAME) {
     name: String(name || DEFAULT_HOME_NAME).trim().slice(0, 40) || DEFAULT_HOME_NAME,
     secret,
     createdAt: Date.now(),
-    createdByDeviceId: state.device.id
+    createdByDeviceId: state.device.id,
+    stealth: Boolean(stealth)
   };
   trustSelf();
   saveState();
@@ -2502,6 +2606,7 @@ function localAnnouncement(): DiscoveryPacket | null {
     webPort,
     capabilities: [...CAPABILITIES],
     capabilityVersions: { ...CAPABILITY_VERSIONS },
+    homeStealth: Boolean(state.home.stealth),
     timestamp: Date.now()
   };
 }
@@ -2540,6 +2645,10 @@ function rememberPeer(packet: DiscoveryPacket, address: string) {
 
 function broadcastPresence() {
   if (!discoverySocket || !state.home) return;
+  // Stealth rooms do not broadcast UDP presence. Point-to-point probes
+  // (manual peer add, LAN / tailnet HTTP scans) still get a reply via
+  // /api/presence, but the room will not appear in passive discovery.
+  if (isStealthHome(state.home)) return;
   const packet = Buffer.from(JSON.stringify(localAnnouncement()));
   for (const address of broadcastAddresses()) {
     discoverySocket.send(packet, 0, packet.length, DISCOVERY_PORT, address);
@@ -4436,7 +4545,7 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown) {
 }
 
 async function handleLocalApi(pathname: string, method: string, body: any) {
-  if (method === 'POST' && pathname === '/api/setup/create') return createHome(body.name);
+  if (method === 'POST' && pathname === '/api/setup/create') return createHome(body.name, body.stealth === true);
   if (method === 'POST' && pathname === '/api/setup/join') return joinHome(body.secret, body.name, body.expectedHomeId);
   if (method === 'POST' && pathname === '/api/setup/leave') return leaveHome();
   if (method === 'GET' && pathname === '/api/rooms') return serializeNearbyRooms();
@@ -4781,10 +4890,10 @@ function registerIpc() {
   ipcMain.handle('lch:repair-firewall', (_event, elevated) => repairFirewallRules(elevated !== false));
   ipcMain.handle('lch:check-updates', () => checkForUpdates());
   ipcMain.handle('lch:open-latest-release', () => shell.openExternal(RELEASES_URL));
-  ipcMain.handle('lch:create-home', (_event, name) => createHome(name));
+ipcMain.handle('lch:create-home', (_event, name, stealth) => createHome(name, Boolean(stealth)));
   ipcMain.handle('lch:join-home', (_event, secret, name, expectedHomeId) => joinHome(secret, name, expectedHomeId));
   ipcMain.handle('lch:leave-home', () => leaveHome());
-  ipcMain.handle('lch:scan-rooms', () => scanLanRooms());
+  ipcMain.handle('lch:scan-rooms', () => scanRooms());
   ipcMain.handle('lch:update-name', (_event, name) => {
     const cleanName = String(name || '').trim().slice(0, 40);
     if (!cleanName) throw new Error('设备名不能为空');

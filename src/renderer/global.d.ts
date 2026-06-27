@@ -13,10 +13,10 @@ declare global {
       repairFirewall: (elevated?: boolean) => Promise<FirewallStatus>;
       checkUpdates: () => Promise<{ currentVersion: string; latestVersion: string; tag: string; updateAvailable: boolean; url: string; publishedAt?: string; assets: Array<{ name: string; size: number; url: string }> }>;
       openLatestRelease: () => Promise<void>;
-      createHome: (name: string) => Promise<AppStateView>;
+      createHome: (name: string, stealth?: boolean) => Promise<AppStateView>;
       joinHome: (secret: string, name: string, expectedHomeId?: string) => Promise<AppStateView>;
       leaveHome: () => Promise<AppStateView>;
-      scanRooms: () => Promise<LanRoomInfo[]>;
+      scanRooms: () => Promise<{ rooms: LanRoomInfo[]; scanned: { lan?: number; tailnet?: number; tailnetSource?: 'cli' | 'fallback' } }>;
       updateName: (name: string) => Promise<AppStateView>;
       updateDevicePreference: (peerId: string, patch: Partial<DevicePreference>) => Promise<AppStateView>;
       setFileSharing: (enabled: boolean) => Promise<AppStateView>;
