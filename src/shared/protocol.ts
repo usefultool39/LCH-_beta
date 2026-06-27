@@ -297,6 +297,19 @@ export interface NetworkInfo {
   webPort: number;
   localApiPort: number;
   addresses: string[];
+  // Network-type breakdown for the SetupScreen and Settings UI.
+  // 'activeNetwork' reports what kind of network the user is most likely on
+  // right now: 'tailnet' if Tailscale is up, 'lan' if only the local network
+  // is reachable, 'both' if both are up, 'none' if nothing is reachable.
+  lanAddresses: string[];
+  tailnetAddresses: string[];
+  activeNetwork: 'lan' | 'tailnet' | 'both' | 'none';
+}
+
+export interface AutoLaunchInfo {
+  enabled: boolean;
+  available: boolean;
+  reason?: string;
 }
 
 export interface FirewallStatus {
@@ -373,9 +386,10 @@ export interface AppStateView {
   agentGatewayEnabled: boolean;
   manualPeerAddresses: ManualPeerAddress[];
   nearbyRooms: LanRoomInfo[];
-  transfers: TransferRecord[];
+transfers: TransferRecord[];
   networkInfo: NetworkInfo;
   webrtc: WebRtcConfig;
+  autoLaunch: AutoLaunchInfo;
 }
 
 export interface ControlPayload<T = unknown> {

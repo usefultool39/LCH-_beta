@@ -26,7 +26,8 @@ import {
   EyeOff,
   Play,
   Plus,
-  Power,
+Power,
+  PowerOff,
   RefreshCw,
   Reply,
   ScreenShare,
@@ -48,7 +49,7 @@ import {
   FileText
 } from 'lucide-react';
 import { APP_VERSION, CHAT_REACTION_EMOJIS, DEFAULT_WEBRTC_CONFIG, MAX_FILE_BYTES } from '../shared/protocol';
-import type { AppStateView, ConversationRecord, DevicePreference, FirewallStatus, LanRoomInfo, PeerInfo, RemoteInputEvent, RemoteOpenResult, RemoteSessionRecord, SharedFileToken, SharedFolderListing, TaskRecord, TerminalOutputEvent, TransferRecord, WebRtcConfig, WebRtcIceTransportPolicy } from '../shared/protocol';
+import type { AppStateView, ConversationRecord, DevicePreference, FirewallStatus, LanRoomInfo, NetworkInfo, PeerInfo, RemoteInputEvent, RemoteOpenResult, RemoteSessionRecord, SharedFileToken, SharedFolderListing, TaskRecord, TerminalOutputEvent, TransferRecord, WebRtcConfig, WebRtcIceTransportPolicy } from '../shared/protocol';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
 
@@ -393,15 +394,24 @@ function readFileAsBase64(file: File) {
 
 function SetupScreen({
   rooms,
+  networkInfo,
   onCreate,
   onJoin,
   onScanRooms
 }: {
   rooms: LanRoomInfo[];
+  networkInfo: NetworkInfo;
   onCreate: (name: string) => void;
   onJoin: (secret: string, name: string, expectedHomeId?: string) => void;
   onScanRooms: () => Promise<unknown> | void;
 }) {
+  const networkBadge = (() => {
+    const kind = networkInfo.activeNetwork;
+    if (kind === 'tailnet') return { label: '当前网络：Tailscale', cls: 'net tailnet', hint: '将只扫描 Tailscale (100.x) 上的房间' };
+    if (kind === 'lan') return { label: '当前网络：局域网', cls: 'net lan', hint: '将只扫描局域网 (192.168/10.x) 上的房间' };
+    if (kind === 'both') return { label: '当前网络：Tailscale + 局域网', cls: 'net both', hint: '可扫描 Tailscale 和局域网上的房间' };
+    return { label: '当前网络：未连接', cls: 'net none', hint: '请连接 Wi-Fi 或启用 Tailscale' };
+  })();
   const [name, setName] = useState('我的 LCH 房间');
   const [secret, setSecret] = useState('');
   const [selectedRoomId, setSelectedRoomId] = useState('');
@@ -425,12 +435,22 @@ function SetupScreen({
   function joinSelectedRoom() {
     onJoin(secret, selectedRoom?.homeName || selectedRoom?.displayName || name, selectedRoom?.homeId);
   }
-  return (
+return (
     <main className="setup">
       <section className="setupHero">
         <div className="setupBrand"><Home size={34} /> Lan Control Hub</div>
         <h1>用同一个房间密钥连接你的电脑</h1>
         <p>房间是同一套加入密钥和信任关系；局域网 192.x、Tailscale 100.x 只是连接入口。不同网络先加入同一房间，再添加 Tailscale IP。</p>
+        <div className={networkBadge.cls} title={networkBadge.hint}>
+          <span className="netDot" />
+          {networkBadge.label}
+        </div>
+        {networkInfo.tailnetAddresses.length ? (
+          <p className="hintText">Tailscale IP：{networkInfo.tailnetAddresses.join('、')}</p>
+        ) : null}
+        {networkInfo.lanAddresses.length ? (
+          <p className="hintText">局域网 IP：{networkInfo.lanAddresses.join('、')}</p>
+        ) : null}
       </section>
       <section className="setupPanel">
         <div className="setupPanelHeader">
@@ -1516,6 +1536,7 @@ function SettingsView({
   state,
   onUpdateName,
   onSetAutoTrust,
+  onSetAutoLaunch,
   onSetAgentGateway,
   onSetWebRtcConfig,
   onConnectManualPeer,
@@ -1528,6 +1549,7 @@ function SettingsView({
   state: AppStateView;
   onUpdateName: (name: string) => void;
   onSetAutoTrust: (enabled: boolean) => void;
+  onSetAutoLaunch: (enabled: boolean) => Promise<unknown> | void;
   onSetAgentGateway: (enabled: boolean) => void;
   onSetWebRtcConfig: (config: WebRtcConfig) => Promise<unknown> | void;
   onConnectManualPeer: (address: string) => Promise<unknown> | void;
@@ -1853,7 +1875,32 @@ function SettingsView({
               window.setTimeout(() => setCopiedMobile(false), 1200);
             }}><Clipboard size={16} /> {copiedMobile ? '已复制' : '复制手机地址'}</button>
           </div>
-          <p className="settingsHint">手机打开后使用房间密钥登录。基础模式可以查看设备和操作网关快捷动作，不开放跨设备命令。</p>
+<p className="settingsHint">手机打开后使用房间密钥登录。基础模式可以查看设备和操作网关快捷动作，不开放跨设备命令。</p>
+        </section>
+        <section className="panel settingsAutoLaunch">
+          <div className="panelHeader">
+            <div>
+              <h2>开机自动启动</h2>
+              <p>{state.autoLaunch.enabled
+                ? '已开启：登录用户后自动启动 Lan Control Hub 到托盘。'
+                : '当前未启用：开机后需要手动启动 App。'}</p>
+              {state.autoLaunch.reason ? <p className="settingsHint">{state.autoLaunch.reason}</p> : null}
+            </div>
+            <span className={`statusPill ${state.autoLaunch.enabled ? 'online' : 'offline'}`}>
+              {state.autoLaunch.enabled ? '已开启' : (state.autoLaunch.available ? '未启用' : '不支持')}
+            </span>
+          </div>
+          <p>开启后，登录 Windows / macOS 时 Lan Control Hub 会自动启动并最小化到托盘；如果 Tailscale 也启用了自启，会先联网再启动 App。</p>
+          <div className="rowActions">
+            <button
+              className={state.autoLaunch.enabled ? 'secondary' : 'primary'}
+              disabled={!state.autoLaunch.available}
+              onClick={() => onSetAutoLaunch(!state.autoLaunch.enabled)}
+            >
+              {state.autoLaunch.enabled ? <PowerOff size={16} /> : <Power size={16} />}
+              {state.autoLaunch.enabled ? '关闭开机自启' : '开启开机自启'}
+            </button>
+          </div>
         </section>
         <section className="panel settingsAdvanced">
           <div className="panelHeader">
@@ -2675,8 +2722,9 @@ function App() {
   if (!state) return <main className="loading">正在启动 Lan Control Hub...</main>;
   if (!state.home) {
     return (
-      <SetupScreen
+<SetupScreen
         rooms={state.nearbyRooms || []}
+        networkInfo={state.networkInfo}
         onCreate={(name) => run(() => api.createHome(name))}
         onJoin={(secret, name, expectedHomeId) => run(() => api.joinHome(secret, name, expectedHomeId))}
         onScanRooms={() => run(() => api.scanRooms())}
@@ -2774,10 +2822,11 @@ function App() {
       ) : null}
       {view === 'tasks' ? <TasksView tasks={state.tasks} /> : null}
       {view === 'settings' ? (
-        <SettingsView
+<SettingsView
           state={state}
           onUpdateName={(name) => run(() => api.updateName(name))}
           onSetAutoTrust={(enabled) => run(() => api.setAutoTrust(enabled))}
+          onSetAutoLaunch={(enabled) => run(() => api.setAutoLaunch(enabled))}
           onSetAgentGateway={(enabled) => run(() => api.setAgentGateway(enabled))}
           onSetWebRtcConfig={(config) => run(() => api.setWebRtcConfig(config))}
           onConnectManualPeer={(address) => run(() => api.connectManualPeer(address))}

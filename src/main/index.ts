@@ -11,8 +11,9 @@ import { ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { pipeline } from 'node:stream/promises';
 import { WebSocket, WebSocketServer } from 'ws';
 import {
-  APP_NAME,
+APP_NAME,
   APP_VERSION,
+  AutoLaunchInfo,
   CAPABILITIES,
   CAPABILITY_VERSIONS,
   CHAT_REACTION_EMOJIS,
@@ -637,14 +638,67 @@ function localAddresses() {
     .map((entry) => entry.address);
 }
 
+function classifyNetwork(addrs: string[]): { lanAddresses: string[]; tailnetAddresses: string[]; activeNetwork: 'lan' | 'tailnet' | 'both' | 'none' } {
+  const lan: string[] = [];
+  const tailnet: string[] = [];
+  for (const addr of addrs) {
+    if (isTailnetAddress(addr)) tailnet.push(addr);
+    else lan.push(addr);
+  }
+  let activeNetwork: 'lan' | 'tailnet' | 'both' | 'none';
+  if (tailnet.length && lan.length) activeNetwork = 'both';
+  else if (tailnet.length) activeNetwork = 'tailnet';
+  else if (lan.length) activeNetwork = 'lan';
+  else activeNetwork = 'none';
+  return { lanAddresses: lan, tailnetAddresses: tailnet, activeNetwork };
+}
+
 function networkInfo(): NetworkInfo {
+  const addrs = localAddresses();
+  const breakdown = classifyNetwork(addrs);
   return {
     discoveryPort: DISCOVERY_PORT,
     controlPort,
     webPort,
     localApiPort,
-    addresses: localAddresses()
+    addresses: addrs,
+    lanAddresses: breakdown.lanAddresses,
+    tailnetAddresses: breakdown.tailnetAddresses,
+    activeNetwork: breakdown.activeNetwork
   };
+}
+
+function getAutoLaunch(): AutoLaunchInfo {
+  if (process.platform !== 'win32' && process.platform !== 'darwin') {
+    return { enabled: false, available: false, reason: '当前平台不支持自动启动（仅 Windows / macOS）' };
+  }
+  try {
+    const settings = app.getLoginItemSettings();
+    return { enabled: Boolean(settings.openAtLogin), available: true };
+  } catch (err) {
+    return {
+      enabled: false,
+      available: false,
+      reason: '读取自动启动设置失败：' + (err instanceof Error ? err.message : String(err))
+    };
+  }
+}
+
+function setAutoLaunch(enabled: boolean): AutoLaunchInfo {
+  if (process.platform !== 'win32' && process.platform !== 'darwin') {
+    throw new Error('当前平台不支持自动启动');
+  }
+  app.setLoginItemSettings({
+    openAtLogin: Boolean(enabled),
+    // On Windows, also pass --hidden so the App starts minimized to tray.
+    args: enabled ? ['--hidden'] : []
+  });
+  addAudit(
+    'system.autoLaunch',
+    enabled ? '已开启开机自动启动' : '已关闭开机自动启动'
+  );
+  emitState();
+  return getAutoLaunch();
 }
 
 function roomDisplayName(homeId: string, homeName?: string) {
@@ -951,8 +1005,9 @@ function appStateView() {
     manualPeerAddresses: state.manualPeerAddresses,
     nearbyRooms: serializeNearbyRooms(),
     transfers: state.transfers.slice(0, MAX_TRANSFER_RECORDS),
-    networkInfo: networkInfo(),
-    webrtc: state.webrtc
+networkInfo: networkInfo(),
+    webrtc: state.webrtc,
+    autoLaunch: getAutoLaunch()
   };
 }
 
@@ -4402,6 +4457,8 @@ async function handleLocalApi(pathname: string, method: string, body: any) {
   if (method === 'POST' && pathname === '/api/devices/revoke') return revokeTrustedDevice(body.peerId);
   if (method === 'POST' && pathname === '/api/settings/file-sharing') return setFileSharing(body.enabled !== false);
   if (method === 'POST' && pathname === '/api/settings/auto-trust') return setAutoTrustDevices(body.enabled !== false);
+  if (method === 'GET' && pathname === '/api/settings/auto-launch') return getAutoLaunch();
+  if (method === 'POST' && pathname === '/api/settings/auto-launch') return setAutoLaunch(body.enabled === true);
   if (method === 'POST' && pathname === '/api/settings/agent-gateway') return setAgentGatewayEnabled(body.enabled === true);
   if (method === 'POST' && pathname === '/api/settings/webrtc') return setWebRtcConfig(body.webrtc || body.config || body);
   if (method === 'GET' && pathname === '/api/tasks') return state.tasks.slice(0, 200);
@@ -4742,6 +4799,8 @@ function registerIpc() {
   ipcMain.handle('lch:set-file-sharing', (_event, enabled) => setFileSharing(Boolean(enabled)));
   ipcMain.handle('lch:set-full-disk-access', (_event, enabled) => setFullDiskAccess(Boolean(enabled)));
   ipcMain.handle('lch:set-auto-trust', (_event, enabled) => setAutoTrustDevices(Boolean(enabled)));
+  ipcMain.handle('lch:get-auto-launch', () => getAutoLaunch());
+  ipcMain.handle('lch:set-auto-launch', (_event, enabled) => setAutoLaunch(Boolean(enabled)));
   ipcMain.handle('lch:set-agent-gateway', (_event, enabled) => setAgentGatewayEnabled(Boolean(enabled)));
   ipcMain.handle('lch:set-webrtc-config', (_event, config) => setWebRtcConfig(config || {}));
   ipcMain.handle('lch:connect-manual-peer', (_event, address) => connectManualPeer(address));

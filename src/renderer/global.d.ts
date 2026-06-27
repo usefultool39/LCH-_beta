@@ -22,6 +22,8 @@ declare global {
       setFileSharing: (enabled: boolean) => Promise<AppStateView>;
       setFullDiskAccess: (enabled: boolean) => Promise<AppStateView>;
       setAutoTrust: (enabled: boolean) => Promise<AppStateView>;
+      getAutoLaunch: () => Promise<{ enabled: boolean; available: boolean; reason?: string }>;
+      setAutoLaunch: (enabled: boolean) => Promise<{ enabled: boolean; available: boolean; reason?: string }>;
       setAgentGateway: (enabled: boolean) => Promise<AppStateView>;
       setWebRtcConfig: (config: WebRtcConfig) => Promise<AppStateView>;
       connectManualPeer: (address: string) => Promise<AppStateView>;

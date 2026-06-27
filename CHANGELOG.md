@@ -14,6 +14,23 @@
   fallback), and CLI distribution limitations of the desktop installer.
 - Docs: add `docs/跨网快速配置.md` as a 5-minute Tailscale + manual peer
   checklist distilled from `外网访问推荐配置.md`.
+- Feat: Setup screen now shows the active network (Tailscale / LAN / both /
+  none) plus the detected Tailscale and LAN IPs, so users can tell at a
+  glance whether the room scanner is looking at 100.x or 192.168.x.
+  Backed by `NetworkInfo.activeNetwork / lanAddresses / tailnetAddresses`.
+- Feat: open-at-login toggle. Windows and macOS users can enable
+  "launch on system startup" from Settings → System; the App registers
+  itself via Electron `setLoginItemSettings({ openAtLogin, args: ['--hidden'] })`
+  so it starts minimized to tray. Linux is intentionally unsupported.
+  Surfaced as `AppStateView.autoLaunch` and as the new IPC / REST endpoints
+  `lch:get-auto-launch` / `lch:set-auto-launch` (and
+  `GET/POST /api/settings/auto-launch`).
+- Docs: add `docs/开机自动启动.md` explaining the toggle, the Tailscale
+  co-existence story, and the GPO / `Run` registry edge cases.
+- Docs: add `docs/room-discovery-redesign.md` capturing the design
+  conversation about Tailscale-only / LAN-only scanning, stealth rooms, and
+  the post-join trust flow. P0 items (Tailscale subnet scan, stealth mode)
+  are queued for v0.17.0.
 
 ## v0.16.0
 
